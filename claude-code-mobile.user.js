@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.6.0
+// @version      1.7.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -207,6 +207,25 @@ GM_addStyle(`
      scroll area, not this padding — this only tightens the in-session case.) */
   [class*="pb-[var(--chat-turn-gap)]"] {
     padding-bottom: 4px !important;
+  }
+
+  /* 16. Bottom composer toolbar (permission-mode toggle / + attach / model
+     selector) is the very bottom line. Like the branch row (rule 8) it's
+     glanceable status plus the occasional tap, not a primary target — but rules
+     1 & 4 inflate its controls to 16px / 40px, making it the largest, tallest
+     text on screen. Give it the same compact treatment: drop the controls back
+     to 13px and let them collapse to natural height, and trim the row's own
+     4px (py-[4px]) padding. Scoped under .epitaxy-chat-column so it can't reach
+     a like-classed row elsewhere; that container holds the single py-[4px]
+     toolbar in-session. */
+  .epitaxy-chat-column [class*="py-[4px]"] {
+    padding-top: 1px !important;
+    padding-bottom: 1px !important;
+  }
+  .epitaxy-chat-column [class*="py-[4px]"] button,
+  .epitaxy-chat-column [class*="py-[4px]"] [role="button"] {
+    min-height: 0 !important;
+    font-size: 13px !important;
   }
 }
 `);
