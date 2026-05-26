@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.2.0
+// @version      1.3.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -137,19 +137,40 @@ GM_addStyle(`
     min-height: 50px !important;
   }
 
-  /* 11. Soft keyboard scrolls the top bar off-screen: <html class="h-screen">
-     resolves to height:100vh, the STATIC viewport height that ignores the
-     keyboard. When the keyboard opens the visual viewport shrinks but the html
-     box does not, so the document overflows and the browser scrolls down to the
-     focused composer — carrying the header away. The app's own .epitaxy-root
-     already uses 100dvh (the dynamic height that tracks the keyboard); mirror
-     that on html/body so the document fits the visible area and never scrolls. */
-  html.h-screen {
-    height: 100dvh !important;
+  /* 11. Soft keyboard handling. The app pins its whole layout to height:100dvh,
+     but dvh — like vh — tracks the browser's UA chrome, NOT the on-screen
+     keyboard. So when the keyboard opens the layout viewport stays full-height:
+     the bottom composer dock is left behind the keyboard, and reaching it scrolls
+     the header off the top. The companion script below publishes the real
+     visible height (visualViewport API — the only thing that reflects the
+     keyboard) as --ccm-vvh. Pin the three height drivers (html, body, and the
+     .epitaxy-root grid that sizes the h-full chain) to it and clip overflow, so
+     the app always fits the area above the keyboard: header fixed at top, the
+     shrink-0 composer dock riding just above the keyboard, transcript scrolling
+     in between. Falls back to 100dvh before the script runs / without a
+     visualViewport, so the keyboard-closed layout is unchanged. */
+  html.h-screen,
+  body.min-h-screen,
+  .epitaxy-root {
+    height: var(--ccm-vvh, 100dvh) !important;
+    min-height: 0 !important;
     overflow: hidden !important;
-  }
-  body.min-h-screen {
-    min-height: 100dvh !important;
   }
 }
 `);
+
+/* Companion to rule 11: publish the visible (above-keyboard) height as the CSS
+   custom property --ccm-vvh on <html>, kept in sync with the soft keyboard via
+   the visualViewport API. vh/dvh can't see the keyboard; this can. Custom
+   properties inherit, so body and .epitaxy-root read it too. */
+(function () {
+  var vv = window.visualViewport;
+  if (!vv) return;
+  var de = document.documentElement;
+  function sync() {
+    de.style.setProperty('--ccm-vvh', vv.height + 'px');
+  }
+  vv.addEventListener('resize', sync);
+  vv.addEventListener('scroll', sync);
+  sync();
+})();
