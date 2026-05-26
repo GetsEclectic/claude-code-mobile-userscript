@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.4.0
+// @version      1.4.1
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -131,12 +131,12 @@ GM_addStyle(`
   }
 
   /* 10. The top-left menu (sidebar toggle) is tapped constantly to switch
-     sessions, so it wants a generous target. It ships as size-7 (a 28px box)
-     inside an absolutely-positioned aside, and min-height alone won't grow it —
-     the aside caps the height, so it lands at 42px. Set an explicit 50px box on
-     both the aside and the button (verified: min-height alone -> 42px, explicit
-     height -> 50px). */
-  aside.dframe-sidebar,
+     sessions, so it wants a generous target. It ships as size-7 (a 28px box).
+     Size ONLY the button to a 50px box: the aside is position:absolute and
+     shrink-wraps to its content, so it grows to 50x50 too (verified). Do NOT
+     put a size on aside.dframe-sidebar itself — that same element IS the
+     expanded sidebar panel, so freezing it to 50x50 clamps the opened session
+     list to a 50px box and it renders blank. */
   aside.dframe-sidebar [aria-label="Open sidebar"] {
     height: 50px !important;
     min-height: 50px !important;
