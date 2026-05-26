@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.4.1
+// @version      1.5.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -148,17 +148,22 @@ GM_addStyle(`
      but dvh — like vh — tracks the browser's UA chrome, NOT the on-screen
      keyboard. So when the keyboard opens the layout viewport stays full-height:
      the bottom composer dock is left behind the keyboard, and reaching it scrolls
-     the header off the top. The companion script below publishes the real
-     visible height (visualViewport API — the only thing that reflects the
-     keyboard) as --ccm-vvh. Pin the three height drivers (html, body, and the
-     .epitaxy-root grid that sizes the h-full chain) to it and clip overflow, so
-     the app always fits the area above the keyboard: header fixed at top, the
-     shrink-0 composer dock riding just above the keyboard, transcript scrolling
-     in between. Falls back to 100dvh before the script runs / without a
-     visualViewport, so the keyboard-closed layout is unchanged. */
-  html.h-screen,
-  body.min-h-screen,
-  .epitaxy-root {
+     the header off the top. The companion script publishes the real visible
+     height (visualViewport API — the only thing that reflects the keyboard) as
+     --ccm-vvh, and adds the .ccm-kb-open class to <html> ONLY while the keyboard
+     is actually up. Pin the three height drivers (html, body, .epitaxy-root) to
+     --ccm-vvh and clip overflow so the app fits the area above the keyboard:
+     header fixed at top, shrink-0 composer dock riding just above the keyboard,
+     transcript scrolling between.
+
+     CRITICAL: this MUST stay gated on .ccm-kb-open. An always-on version (the
+     overflow:hidden + min-height:0 applied even with the keyboard down) collapses
+     the sidebar's flex-1 Recents list to zero height (blank sidebar) and clips
+     the composer's +/attachment and context popovers. Keyboard-down must be the
+     app's stock layout, untouched. */
+  html.ccm-kb-open,
+  html.ccm-kb-open body.min-h-screen,
+  html.ccm-kb-open .epitaxy-root {
     height: var(--ccm-vvh, 100dvh) !important;
     min-height: 0 !important;
     overflow: hidden !important;
@@ -187,20 +192,31 @@ GM_addStyle(`
 }
 `);
 
-/* Companion to rule 11: publish the visible (above-keyboard) height as the CSS
-   custom property --ccm-vvh on <html>, kept in sync with the soft keyboard via
-   the visualViewport API. vh/dvh can't see the keyboard; this can. Custom
-   properties inherit, so body and .epitaxy-root read it too.
+/* Companion to rule 11. Two jobs, both driven off the visualViewport API (the
+   only thing that reflects the soft keyboard; vh/dvh can't see it):
 
-   Also keeps the transcript pinned: when the keyboard opens, rule 11 shrinks the
-   app, so the flex-1 transcript loses height from the bottom and whatever was at
-   the bottom edge slips behind the composer. The transcript is a virtualized
-   scroller, so nudge its scrollTop by the height delta to hold that content in
-   view (and unwind it symmetrically when the keyboard closes). */
+   1. Detect whether the keyboard is up and toggle the .ccm-kb-open class on
+      <html>, which is the sole switch that arms rule 11. Detection compares the
+      current visible height against the tallest height seen so far (maxH, the
+      keyboard-down baseline). The keyboard steals ~250-350px; UA chrome show/hide
+      only moves ~60px, so a 150px threshold cleanly separates the two. Because
+      vv.height is the browser's own visible region, it's immune to the html
+      height changes rule 11 makes — no feedback loop.
+   2. Publish that visible height as --ccm-vvh for rule 11 to size to, and hold
+      the transcript bottom in place: when the keyboard opens the app shrinks, so
+      the virtualized transcript loses height from the bottom and its bottom edge
+      slips behind the composer. Nudge the scroller's scrollTop by the height
+      delta to keep that content visible (symmetric on close).
+
+   Only listens to 'resize' — that's what the keyboard fires. (An earlier build
+   also synced on every 'scroll' event, which thrashed style recalc and made the
+   page laggy; the scroll listener did nothing useful since scrolling doesn't
+   change vv.height.) */
 (function () {
   var vv = window.visualViewport;
   if (!vv) return;
   var de = document.documentElement;
+  var maxH = vv.height;
   var prevH = vv.height;
   function findScroller() {
     var m = document.querySelector('.epitaxy-markdown');
@@ -213,15 +229,17 @@ GM_addStyle(`
     return null;
   }
   function sync() {
+    if (vv.height > maxH) maxH = vv.height;
+    var kbOpen = (maxH - vv.height) > 150;
+    de.classList.toggle('ccm-kb-open', kbOpen);
     de.style.setProperty('--ccm-vvh', vv.height + 'px');
     var delta = prevH - vv.height; // > 0 when the keyboard opens (height shrinks)
     prevH = vv.height;
-    if (delta) {
+    if (Math.abs(delta) > 60) { // keyboard-sized move: hold transcript bottom
       var s = findScroller();
       if (s) s.scrollTop += delta;
     }
   }
   vv.addEventListener('resize', sync);
-  vv.addEventListener('scroll', sync);
   sync();
 })();
