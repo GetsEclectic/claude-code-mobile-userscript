@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.3.0
+// @version      1.4.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -130,11 +130,18 @@ GM_addStyle(`
     padding-bottom: 4px !important;
   }
 
-  /* 10. The top-left menu button is tapped constantly to switch sessions —
-     give it a larger target than the shared 44px icon floor. */
-  [aria-label="Open sidebar"] {
-    min-width: 50px !important;
+  /* 10. The top-left menu (sidebar toggle) is tapped constantly to switch
+     sessions, so it wants a generous target. It ships as size-7 (a 28px box)
+     inside an absolutely-positioned aside, and min-height alone won't grow it —
+     the aside caps the height, so it lands at 42px. Set an explicit 50px box on
+     both the aside and the button (verified: min-height alone -> 42px, explicit
+     height -> 50px). */
+  aside.dframe-sidebar,
+  aside.dframe-sidebar [aria-label="Open sidebar"] {
+    height: 50px !important;
     min-height: 50px !important;
+    width: 50px !important;
+    min-width: 50px !important;
   }
 
   /* 11. Soft keyboard handling. The app pins its whole layout to height:100dvh,
@@ -156,19 +163,63 @@ GM_addStyle(`
     min-height: 0 !important;
     overflow: hidden !important;
   }
+
+  /* 12. In-session title bar reads "[repo] / [session title]". The repo is
+     always the same one and steals horizontal room, so the title truncates
+     early. Hide the repo button and the "/" separator — they are the two direct
+     <span> children of the title bar's content wrapper; the session title lives
+     in a sibling <div class="...flex-1"> and is left untouched, so it reclaims
+     the full width. */
+  [data-top-left="true"] .draggable-none > span {
+    display: none !important;
+  }
+
+  /* 13. The Send / Stop button sits in a 52px-tall composer cell but ships at a
+     44px box — a bit tight. Bump the finger target. Target the button by its
+     slot (.epitaxy-prompt .self-end button) so it covers both the Send arrow and
+     the Stop square the slot toggles between, plus the explicit labels. */
+  .epitaxy-prompt .self-end button,
+  [aria-label="Send"],
+  [aria-label="Stop"] {
+    min-width: 48px !important;
+    min-height: 48px !important;
+  }
 }
 `);
 
 /* Companion to rule 11: publish the visible (above-keyboard) height as the CSS
    custom property --ccm-vvh on <html>, kept in sync with the soft keyboard via
    the visualViewport API. vh/dvh can't see the keyboard; this can. Custom
-   properties inherit, so body and .epitaxy-root read it too. */
+   properties inherit, so body and .epitaxy-root read it too.
+
+   Also keeps the transcript pinned: when the keyboard opens, rule 11 shrinks the
+   app, so the flex-1 transcript loses height from the bottom and whatever was at
+   the bottom edge slips behind the composer. The transcript is a virtualized
+   scroller, so nudge its scrollTop by the height delta to hold that content in
+   view (and unwind it symmetrically when the keyboard closes). */
 (function () {
   var vv = window.visualViewport;
   if (!vv) return;
   var de = document.documentElement;
+  var prevH = vv.height;
+  function findScroller() {
+    var m = document.querySelector('.epitaxy-markdown');
+    for (var n = m; n; n = n.parentElement) {
+      var oy = getComputedStyle(n).overflowY;
+      if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight + 4) {
+        return n;
+      }
+    }
+    return null;
+  }
   function sync() {
     de.style.setProperty('--ccm-vvh', vv.height + 'px');
+    var delta = prevH - vv.height; // > 0 when the keyboard opens (height shrinks)
+    prevH = vv.height;
+    if (delta) {
+      var s = findScroller();
+      if (s) s.scrollTop += delta;
+    }
   }
   vv.addEventListener('resize', sync);
   vv.addEventListener('scroll', sync);
