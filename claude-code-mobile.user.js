@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.7.0
+// @version      1.8.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -192,12 +192,20 @@ GM_addStyle(`
     min-height: 48px !important;
   }
 
-  /* 14. Transcript turns are spaced by gap-[var(--chat-item-gap)] on the message
-     list, which reads large on a phone — few turns fit per screen. Override the
-     flex gap directly on that container (selected by its literal arbitrary-value
-     class) so it's independent of wherever the app defines the variable. */
+  /* 14. Transcript spacing is driven by gap-[var(--chat-item-gap)], which the
+     app applies at TWO nesting levels: the outer turn list (…select-text) that
+     separates whole turns, and inner per-message lists that stack a single
+     turn's blocks — prose paragraphs and the collapsed tool-call rows ("Ran N
+     commands"). Stock reads large on a phone. Cap the turn gap at 20px so more
+     turns fit; tighten the inner block gap to 8px so the collapsed tool rows
+     hug their surrounding text instead of floating in 20px of space. The
+     :not(.select-text) rule outranks the base rule on specificity, so inner
+     lists settle at 8px while the select-text turn lists keep 20px. */
   [class*="gap-[var(--chat-item-gap)]"] {
     gap: 20px !important;
+  }
+  [class*="gap-[var(--chat-item-gap)]"]:not(.select-text) {
+    gap: 8px !important;
   }
 
   /* 15. The transcript content wrapper pads its bottom with
