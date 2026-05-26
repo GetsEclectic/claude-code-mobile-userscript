@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.5.0
+// @version      1.6.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -123,11 +123,13 @@ GM_addStyle(`
     font-size: 13px !important;
   }
 
-  /* 9. Composer: the send-button wrapper's padding makes the box ~64px tall,
-     leaving dead space below a single line of placeholder text. Trim it. */
+  /* 9. Composer: the send-button slot's 4px top+bottom padding wraps the 48px
+     send button (rule 13) into a 56px-tall row, which is the box's height floor
+     — taller than a single line of text needs. Zero the slot's vertical padding
+     so the box settles to the 48px button height (measured 56px -> 48px). */
   .epitaxy-prompt .self-end {
-    padding-top: 4px !important;
-    padding-bottom: 4px !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
   }
 
   /* 10. The top-left menu (sidebar toggle) is tapped constantly to switch
@@ -188,6 +190,23 @@ GM_addStyle(`
   [aria-label="Stop"] {
     min-width: 48px !important;
     min-height: 48px !important;
+  }
+
+  /* 14. Transcript turns are spaced by gap-[var(--chat-item-gap)] on the message
+     list, which reads large on a phone — few turns fit per screen. Override the
+     flex gap directly on that container (selected by its literal arbitrary-value
+     class) so it's independent of wherever the app defines the variable. */
+  [class*="gap-[var(--chat-item-gap)]"] {
+    gap: 20px !important;
+  }
+
+  /* 15. The transcript content wrapper pads its bottom with
+     pb-[var(--chat-turn-gap)] (~15px in-session), which adds to the gap already
+     left above the composer. Trim it so the last turn sits closer to the dock.
+     (The large void above the composer in a short conversation is mostly empty
+     scroll area, not this padding — this only tightens the in-session case.) */
+  [class*="pb-[var(--chat-turn-gap)]"] {
+    padding-bottom: 4px !important;
   }
 }
 `);
