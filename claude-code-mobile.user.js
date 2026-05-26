@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.8.0
+// @version      1.9.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -123,13 +123,16 @@ GM_addStyle(`
     font-size: 13px !important;
   }
 
-  /* 9. Composer: the send-button slot's 4px top+bottom padding wraps the 48px
-     send button (rule 13) into a 56px-tall row, which is the box's height floor
-     — taller than a single line of text needs. Zero the slot's vertical padding
-     so the box settles to the 48px button height (measured 56px -> 48px). */
+  /* 9. The send-slot (.self-end) wraps the send button with p-p7 padding — ~10px
+     on each side. The top/bottom padding would stack onto the 56px button (rule
+     13) and inflate the box past the button height, and the right ~10px is dead
+     space between the icon and the composer's edge (the gap rule 7 notes). Zero
+     the vertical padding so the box hugs the button, and trim the right gap so
+     the bigger button doesn't push toward the edge with wasted space beside it. */
   .epitaxy-prompt .self-end {
     padding-top: 0 !important;
     padding-bottom: 0 !important;
+    padding-right: 6px !important;
   }
 
   /* 10. The top-left menu (sidebar toggle) is tapped constantly to switch
@@ -181,15 +184,17 @@ GM_addStyle(`
     display: none !important;
   }
 
-  /* 13. The Send / Stop button sits in a 52px-tall composer cell but ships at a
-     44px box — a bit tight. Bump the finger target. Target the button by its
-     slot (.epitaxy-prompt .self-end button) so it covers both the Send arrow and
-     the Stop square the slot toggles between, plus the explicit labels. */
+  /* 13. The Send / Stop button is the primary composer action but ships small.
+     Give it a generous 56px finger target. Target the button by its slot
+     (.epitaxy-prompt .self-end button) so it covers both the Send arrow and the
+     Stop square the slot toggles between, plus the explicit labels. NOTE: the
+     button is the composer box's height driver, so 56px here makes the box 56px
+     tall (rule 9 keeps it hugging the button with no extra padding). */
   .epitaxy-prompt .self-end button,
   [aria-label="Send"],
   [aria-label="Stop"] {
-    min-width: 48px !important;
-    min-height: 48px !important;
+    min-width: 56px !important;
+    min-height: 56px !important;
   }
 
   /* 14. Transcript spacing is driven by gap-[var(--chat-item-gap)], which the
