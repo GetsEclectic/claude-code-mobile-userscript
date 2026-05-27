@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.24.0
+// @version      1.25.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -377,6 +377,20 @@ GM_addStyle(`
   [role="menuitem"] {
     font-size: 17px !important;
     min-height: 40px !important;
+  }
+
+  /* 20. The per-message meta row under each turn (timestamp + Copy message / Edit)
+     is glanceable secondary action, not a primary target — but rule 2 inflates its
+     Copy button to 44px and rule 4's universal 40px floor catches the rest, so the
+     row balloons from its stock ~24px to ~48px. That adds ~24px of dead space below
+     every message, which reads as a too-large gap between a turn and the next one.
+     Give it the bottom-toolbar treatment (rule 16): let the controls collapse back
+     to natural height. The row's pt-[4px] hook scopes this to the meta row;
+     .epitaxy-chat-column keeps it off like-classed rows outside the transcript. */
+  .epitaxy-chat-column [class*="pt-[4px]"] button,
+  .epitaxy-chat-column [class*="pt-[4px]"] [role="button"] {
+    min-height: 0 !important;
+    min-width: 0 !important;
   }
 }
 `);
