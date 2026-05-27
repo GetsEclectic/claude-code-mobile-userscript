@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.9.0
+// @version      1.10.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -239,6 +239,27 @@ GM_addStyle(`
   .epitaxy-chat-column [class*="py-[4px]"] [role="button"] {
     min-height: 0 !important;
     font-size: 13px !important;
+  }
+
+  /* 17. The Send/Stop button is an "uncontained" control — its fill is
+     var(--fill-uncontained-*), nearly the same neutral as the composer, so the
+     primary action vanishes into the background. Paint it with Claude's coral
+     accent and flip the currentColor icon to white for contrast. The fill is
+     drawn by the .btn-squish span behind the icon (-z-[1]), so override that,
+     not the button. Coral applies in every state so the button is always
+     locatable (the empty-composer state is :disabled — exactly what reads as
+     invisible); dim that disabled state with opacity so it still signals "not
+     ready to send" without disappearing. Works on both light and dark themes:
+     coral is a mid-tone that contrasts with either composer fill, white icon
+     reads on coral in both. */
+  .epitaxy-prompt .self-end button .btn-squish {
+    background: #d97757 !important;
+  }
+  .epitaxy-prompt .self-end button {
+    color: #fff !important;
+  }
+  .epitaxy-prompt .self-end button:disabled {
+    opacity: 0.45 !important;
   }
 }
 `);
