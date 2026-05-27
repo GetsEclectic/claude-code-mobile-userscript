@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.27.0
+// @version      1.28.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -68,7 +68,7 @@ GM_addStyle(`
      the taller box overflowed downward into the dock and upward into the
      transcript, surfacing as a stray floating chevron box straddling the last
      transcript line (it's a transient overlay, not a primary tap target). Keep
-     it native; specificity (0,1,0) outranks rule 4's bare `button`. */
+     it native; specificity (0,1,0) outranks rule 4's bare button selector. */
   [aria-label="Scroll to bottom"] {
     min-width: 0 !important;
     min-height: 0 !important;
