@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.17.0
+// @version      1.18.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -300,13 +300,29 @@ GM_addStyle(`
      text doesn't hug it. Selecting it under .epitaxy-prompt scopes the styling to
      the relocated state — in the stock toolbar the button is NOT a descendant of
      .epitaxy-prompt, so this can't touch it before the move. Out of the compact
-     py-[4px] toolbar, rule 16's shrink no longer applies and it regains the
-     rule-2 44px finger target. */
+     py-[4px] toolbar, rule 16's shrink no longer applies and it would regain the
+     rule-2 44px finger target. But the "+" glyph is only ~13px, so a 44px box
+     floats it in dead space — the "too much padding around the +" Ben flagged.
+     Shrink the VISIBLE box to 30px so it hugs the glyph and sits closer to the
+     text, and trim the margins. A transparent ::after restores the finger target
+     (hit-slop reaching left/up/down past the chip) without the visual bulk — same
+     trick as rule 10. Right slop stays 0 so it never steals taps from the
+     textarea sitting immediately to its right. */
   .epitaxy-prompt button[aria-label="Add"] {
     align-self: center !important;
     flex: 0 0 auto !important;
-    margin-left: 4px !important;
-    margin-right: 2px !important;
+    min-width: 30px !important;
+    margin-left: 2px !important;
+    margin-right: 0 !important;
+    position: relative !important;
+  }
+  .epitaxy-prompt button[aria-label="Add"]::after {
+    content: "" !important;
+    position: absolute !important;
+    top: -12px !important;
+    bottom: -12px !important;
+    left: -8px !important;
+    right: 0 !important;
   }
 }
 `);
@@ -444,5 +460,40 @@ GM_addStyle(`
     var t = e.target;
     if (!t || !t.closest || !t.closest(ROW)) return;
     setTimeout(dismiss, 350); // let the app's navigation handler run first
+  }, true);
+})();
+
+/* Fix: with the soft keyboard up, the FIRST tap on the top-left menu (the
+   "Open sidebar" button) only dismisses the keyboard — it takes a second tap to
+   actually open the drawer.
+
+   Cause: tapping the button blurs the focused composer, which closes the
+   keyboard; the resulting visualViewport resize (handled by the rule-11
+   companion above) reflows the layout and nudges the scroller mid-gesture, and
+   that shift swallows the click before it reaches the button.
+
+   Fix: while the keyboard is up (html.ccm-kb-open — the same switch rule 11
+   uses), preventDefault on the button's pointerdown so the composer keeps focus
+   and the keyboard does NOT close on this tap. With no blur there's no resize,
+   no reflow, so the click lands and the drawer opens on the first tap. We then
+   drop the keyboard ourselves a tick later — after the app's open handler has
+   run — so the end state is "menu open, keyboard dismissed". Strictly gated on
+   ccm-kb-open: with the keyboard down this is a no-op and the stock tap is
+   untouched, so it can't regress the common case. */
+(function () {
+  var SEL = '[aria-label="Open sidebar"]';
+  function kbOpen() {
+    return document.documentElement.classList.contains('ccm-kb-open');
+  }
+  document.addEventListener('pointerdown', function (e) {
+    if (!kbOpen()) return;
+    if (!e.target || !e.target.closest || !e.target.closest(SEL)) return;
+    e.preventDefault(); // keep the composer focused -> no keyboard-close reflow -> the click lands
+  }, true);
+  document.addEventListener('click', function (e) {
+    if (!kbOpen()) return;
+    if (!e.target || !e.target.closest || !e.target.closest(SEL)) return;
+    var ae = document.activeElement;
+    if (ae && ae.blur) setTimeout(function () { ae.blur(); }, 0); // drop the keyboard once the drawer is opening
   }, true);
 })();
