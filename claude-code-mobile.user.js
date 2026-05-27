@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.21.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input.
+// @version      1.22.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -371,11 +371,17 @@ GM_addStyle(`
 
    1. Detect whether the keyboard is up and toggle the .ccm-kb-open class on
       <html>, which is the sole switch that arms rule 11. Detection compares the
-      current visible height against the tallest height seen so far (maxH, the
-      keyboard-down baseline). The keyboard steals ~250-350px; UA chrome show/hide
-      only moves ~60px, so a 150px threshold cleanly separates the two. Because
-      vv.height is the browser's own visible region, it's immune to the html
-      height changes rule 11 makes — no feedback loop.
+      current visible height against the keyboard-down baseline (maxH). That
+      baseline is seeded from window.innerHeight, NOT vv.height: the layout
+      viewport (innerHeight) doesn't shrink for the soft keyboard (the viewport
+      meta is resizes-visual, not interactive-widget=resizes-content) and is
+      immune to rule 11's html-height pin, so it's a stable keyboard-down anchor
+      even when a freshly-opened session auto-focuses the composer with the
+      keyboard already up (where seeding from vv.height would lock in the
+      keyboard-UP height and rule 11 would never arm). The keyboard steals
+      ~250-350px; UA chrome show/hide only moves ~60px, so a 150px threshold
+      cleanly separates the two. vv.height is the browser's own visible region,
+      so it's immune to the html height changes rule 11 makes — no feedback loop.
    2. Publish that visible height as --ccm-vvh for rule 11 to size to, and hold
       the transcript bottom in place: when the keyboard opens the app shrinks, so
       the virtualized transcript loses height from the bottom and its bottom edge
@@ -390,8 +396,14 @@ GM_addStyle(`
   var vv = window.visualViewport;
   if (!vv) return;
   var de = document.documentElement;
-  var maxH = vv.height;
+  // Keyboard-down baseline: innerHeight (layout viewport) doesn't shrink for the
+  // soft keyboard and is immune to rule 11's pin, so it survives a session that
+  // opens with the keyboard already up. vv.height is the fallback if innerHeight
+  // is somehow smaller (e.g. desktop split views).
+  function fullHeight() { return Math.max(window.innerHeight, vv.height); }
+  var maxH = fullHeight();
   var prevH = vv.height;
+  var wasOpen = false;
   function findScroller() {
     var m = document.querySelector('.epitaxy-markdown');
     for (var n = m; n; n = n.parentElement) {
@@ -403,16 +415,28 @@ GM_addStyle(`
     return null;
   }
   function sync() {
-    if (vv.height > maxH) maxH = vv.height;
+    // Rule 11 only applies below 900px; above it the class does nothing and the
+    // scroll-hold would nudge an unrelated scroller. Bail (and clear any armed
+    // state) so the desktop layout is never touched.
+    if (window.innerWidth > 900) {
+      if (wasOpen) { de.classList.remove('ccm-kb-open'); wasOpen = false; }
+      prevH = vv.height;
+      return;
+    }
+    maxH = Math.max(maxH, fullHeight());
     var kbOpen = (maxH - vv.height) > 150;
     de.classList.toggle('ccm-kb-open', kbOpen);
     de.style.setProperty('--ccm-vvh', vv.height + 'px');
     var delta = prevH - vv.height; // > 0 when the keyboard opens (height shrinks)
     prevH = vv.height;
-    if (Math.abs(delta) > 60) { // keyboard-sized move: hold transcript bottom
+    // Only hold the transcript bottom across an actual keyboard transition.
+    // Gating on the delta size alone misfired on UA-chrome show/hide (~60-90px),
+    // which clamped near the bottom and drifted the transcript one way each cycle.
+    if (kbOpen || wasOpen) {
       var s = findScroller();
       if (s) s.scrollTop += delta;
     }
+    wasOpen = kbOpen;
   }
   vv.addEventListener('resize', sync);
   sync();
