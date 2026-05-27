@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.15.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
+// @version      1.16.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -291,6 +291,23 @@ GM_addStyle(`
   .epitaxy-prompt .self-end button:disabled {
     opacity: 0.45 !important;
   }
+
+  /* 18. The "+" (Add / attach) is lifted out of the bottom toolbar and into the
+     composer input row by the companion script below, inline to the LEFT of the
+     textarea. Style it for that spot: vertical-center it against a multi-line
+     composer (like the Send button, rule 9) instead of stretching the full row
+     height, don't let flex grow/shrink it, and give it a small gutter so the
+     text doesn't hug it. Selecting it under .epitaxy-prompt scopes the styling to
+     the relocated state — in the stock toolbar the button is NOT a descendant of
+     .epitaxy-prompt, so this can't touch it before the move. Out of the compact
+     py-[4px] toolbar, rule 16's shrink no longer applies and it regains the
+     rule-2 44px finger target. */
+  .epitaxy-prompt button[aria-label="Add"] {
+    align-self: center !important;
+    flex: 0 0 auto !important;
+    margin-left: 4px !important;
+    margin-right: 2px !important;
+  }
 }
 `);
 
@@ -344,4 +361,45 @@ GM_addStyle(`
   }
   vv.addEventListener('resize', sync);
   sync();
+})();
+
+/* Companion to rule 18. Relocate the composer "+" (the Add / attach button)
+   from the bottom toolbar row up INTO the composer input row, inline to the left
+   of the textarea. This can't be done in CSS: the "+" lives in a separate
+   sibling row (.epitaxy-chat-column > the py-[4px] toolbar, alongside the
+   permission-mode toggle and model selector) from the input box, and CSS
+   reordering can't move a node across containers. So move the node itself —
+   insert it as the first child of the input row (.epitaxy-prompt's
+   div.relative.flex.w-full, whose other children are the flex-1 text input and
+   the .self-end Send button). flex-1 on the input then shoves the textarea over
+   to make room, which is the "push the textarea over" behaviour we want.
+
+   The app is React and owns these nodes, re-rendering the composer on state
+   changes (typing, permission-mode / model toggles, send). A MutationObserver
+   re-asserts the move whenever a re-render puts the button back in the toolbar.
+   relocate() is a no-op once the button is already first child, so the observer
+   settles instead of looping, and it is wrapped so a reconciliation race can
+   never throw out of our handler into the page. */
+(function () {
+  function relocate() {
+    try {
+      var input = document.querySelector('.epitaxy-prompt-input');
+      var plus = document.querySelector('button[aria-label="Add"]');
+      if (!input || !plus) return;
+      var row = input.parentElement; // div.relative.flex.w-full
+      if (!row) return;
+      if (plus.parentElement === row && row.firstElementChild === plus) return;
+      row.insertBefore(plus, row.firstChild);
+    } catch (e) { /* never let a reconciliation race break the composer */ }
+  }
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; relocate(); });
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true,
+  });
+  relocate();
 })();
