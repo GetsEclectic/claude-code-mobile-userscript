@@ -2,7 +2,7 @@
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
 // @version      1.18.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input.
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -300,29 +300,13 @@ GM_addStyle(`
      text doesn't hug it. Selecting it under .epitaxy-prompt scopes the styling to
      the relocated state — in the stock toolbar the button is NOT a descendant of
      .epitaxy-prompt, so this can't touch it before the move. Out of the compact
-     py-[4px] toolbar, rule 16's shrink no longer applies and it would regain the
-     rule-2 44px finger target. But the "+" glyph is only ~13px, so a 44px box
-     floats it in dead space — the "too much padding around the +" Ben flagged.
-     Shrink the VISIBLE box to 30px so it hugs the glyph and sits closer to the
-     text, and trim the margins. A transparent ::after restores the finger target
-     (hit-slop reaching left/up/down past the chip) without the visual bulk — same
-     trick as rule 10. Right slop stays 0 so it never steals taps from the
-     textarea sitting immediately to its right. */
+     py-[4px] toolbar, rule 16's shrink no longer applies and it regains the
+     rule-2 44px finger target. */
   .epitaxy-prompt button[aria-label="Add"] {
     align-self: center !important;
     flex: 0 0 auto !important;
-    min-width: 30px !important;
-    margin-left: 2px !important;
-    margin-right: 0 !important;
-    position: relative !important;
-  }
-  .epitaxy-prompt button[aria-label="Add"]::after {
-    content: "" !important;
-    position: absolute !important;
-    top: -12px !important;
-    bottom: -12px !important;
-    left: -8px !important;
-    right: 0 !important;
+    margin-left: 4px !important;
+    margin-right: 2px !important;
   }
 }
 `);
@@ -332,11 +316,17 @@ GM_addStyle(`
 
    1. Detect whether the keyboard is up and toggle the .ccm-kb-open class on
       <html>, which is the sole switch that arms rule 11. Detection compares the
-      current visible height against the tallest height seen so far (maxH, the
-      keyboard-down baseline). The keyboard steals ~250-350px; UA chrome show/hide
-      only moves ~60px, so a 150px threshold cleanly separates the two. Because
-      vv.height is the browser's own visible region, it's immune to the html
-      height changes rule 11 makes — no feedback loop.
+      current visible height against the keyboard-down baseline (maxH). That
+      baseline is seeded from window.innerHeight, NOT vv.height: the layout
+      viewport (innerHeight) doesn't shrink for the soft keyboard (the viewport
+      meta is resizes-visual, not interactive-widget=resizes-content) and is
+      immune to rule 11's html-height pin, so it's a stable keyboard-down anchor
+      even when a freshly-opened session auto-focuses the composer with the
+      keyboard already up (where seeding from vv.height would lock in the
+      keyboard-UP height and rule 11 would never arm). The keyboard steals
+      ~250-350px; UA chrome show/hide only moves ~60px, so a 150px threshold
+      cleanly separates the two. vv.height is the browser's own visible region,
+      so it's immune to the html height changes rule 11 makes — no feedback loop.
    2. Publish that visible height as --ccm-vvh for rule 11 to size to, and hold
       the transcript bottom in place: when the keyboard opens the app shrinks, so
       the virtualized transcript loses height from the bottom and its bottom edge
@@ -351,8 +341,14 @@ GM_addStyle(`
   var vv = window.visualViewport;
   if (!vv) return;
   var de = document.documentElement;
-  var maxH = vv.height;
+  // Keyboard-down baseline: innerHeight (layout viewport) doesn't shrink for the
+  // soft keyboard and is immune to rule 11's pin, so it survives a session that
+  // opens with the keyboard already up. vv.height is the fallback if innerHeight
+  // is somehow smaller (e.g. desktop split views).
+  function fullHeight() { return Math.max(window.innerHeight, vv.height); }
+  var maxH = fullHeight();
   var prevH = vv.height;
+  var wasOpen = false;
   function findScroller() {
     var m = document.querySelector('.epitaxy-markdown');
     for (var n = m; n; n = n.parentElement) {
@@ -364,16 +360,28 @@ GM_addStyle(`
     return null;
   }
   function sync() {
-    if (vv.height > maxH) maxH = vv.height;
+    // Rule 11 only applies below 900px; above it the class does nothing and the
+    // scroll-hold would nudge an unrelated scroller. Bail (and clear any armed
+    // state) so the desktop layout is never touched.
+    if (window.innerWidth > 900) {
+      if (wasOpen) { de.classList.remove('ccm-kb-open'); wasOpen = false; }
+      prevH = vv.height;
+      return;
+    }
+    maxH = Math.max(maxH, fullHeight());
     var kbOpen = (maxH - vv.height) > 150;
     de.classList.toggle('ccm-kb-open', kbOpen);
     de.style.setProperty('--ccm-vvh', vv.height + 'px');
     var delta = prevH - vv.height; // > 0 when the keyboard opens (height shrinks)
     prevH = vv.height;
-    if (Math.abs(delta) > 60) { // keyboard-sized move: hold transcript bottom
+    // Only hold the transcript bottom across an actual keyboard transition.
+    // Gating on the delta size alone misfired on UA-chrome show/hide (~60-90px),
+    // which clamped near the bottom and drifted the transcript one way each cycle.
+    if (kbOpen || wasOpen) {
       var s = findScroller();
       if (s) s.scrollTop += delta;
     }
+    wasOpen = kbOpen;
   }
   vv.addEventListener('resize', sync);
   sync();
@@ -460,40 +468,5 @@ GM_addStyle(`
     var t = e.target;
     if (!t || !t.closest || !t.closest(ROW)) return;
     setTimeout(dismiss, 350); // let the app's navigation handler run first
-  }, true);
-})();
-
-/* Fix: with the soft keyboard up, the FIRST tap on the top-left menu (the
-   "Open sidebar" button) only dismisses the keyboard — it takes a second tap to
-   actually open the drawer.
-
-   Cause: tapping the button blurs the focused composer, which closes the
-   keyboard; the resulting visualViewport resize (handled by the rule-11
-   companion above) reflows the layout and nudges the scroller mid-gesture, and
-   that shift swallows the click before it reaches the button.
-
-   Fix: while the keyboard is up (html.ccm-kb-open — the same switch rule 11
-   uses), preventDefault on the button's pointerdown so the composer keeps focus
-   and the keyboard does NOT close on this tap. With no blur there's no resize,
-   no reflow, so the click lands and the drawer opens on the first tap. We then
-   drop the keyboard ourselves a tick later — after the app's open handler has
-   run — so the end state is "menu open, keyboard dismissed". Strictly gated on
-   ccm-kb-open: with the keyboard down this is a no-op and the stock tap is
-   untouched, so it can't regress the common case. */
-(function () {
-  var SEL = '[aria-label="Open sidebar"]';
-  function kbOpen() {
-    return document.documentElement.classList.contains('ccm-kb-open');
-  }
-  document.addEventListener('pointerdown', function (e) {
-    if (!kbOpen()) return;
-    if (!e.target || !e.target.closest || !e.target.closest(SEL)) return;
-    e.preventDefault(); // keep the composer focused -> no keyboard-close reflow -> the click lands
-  }, true);
-  document.addEventListener('click', function (e) {
-    if (!kbOpen()) return;
-    if (!e.target || !e.target.closest || !e.target.closest(SEL)) return;
-    var ae = document.activeElement;
-    if (ae && ae.blur) setTimeout(function () { ae.blur(); }, 0); // drop the keyboard once the drawer is opening
   }, true);
 })();
