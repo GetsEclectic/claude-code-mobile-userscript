@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.23.0
+// @version      1.24.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -217,20 +217,20 @@ GM_addStyle(`
     display: none !important;
   }
 
-  /* 13. The Send / Stop button is the primary composer action. Give it a 34px
+  /* 13. The Send / Stop button is the primary composer action. Give it a 30px
      finger target shaped as a circle (border-radius:full) rather than the stock
      rounded-rect, so the coral accent (rule 17) reads as a tidy disc instead of
      a heavy slab. The .btn-squish fill span inherits the radius (rounded-
      [inherit]). Target the button by its slot (.epitaxy-prompt .self-end button)
-     so it covers both the Send arrow and the Stop square, plus the labels. 34px
-     is a deliberate compromise: 40px read as too heavy a disc, the stock 24px is
-     too small a tap target — 34px keeps the composer compact while staying
-     comfortably tappable. */
+     so it covers both the Send arrow and the Stop square, plus the labels. 30px
+     keeps the disc compact and matches the relocated "+" box (rule 18) for a
+     balanced composer; 40px read as too heavy a slab, the stock 24px is too
+     small a tap target. */
   .epitaxy-prompt .self-end button,
   [aria-label="Send"],
   [aria-label="Stop"] {
-    min-width: 34px !important;
-    min-height: 34px !important;
+    min-width: 30px !important;
+    min-height: 30px !important;
     border-radius: 9999px !important;
   }
 
