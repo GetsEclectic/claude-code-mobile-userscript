@@ -63,6 +63,27 @@ prefix is hidden), the tighter side margins, and the recolored Send button.
 The script declares `@updateURL` / `@downloadURL`, so your userscript manager
 picks up new versions on its normal update check — no need to reinstall.
 
+## Developing / verifying changes
+
+claude.ai's DOM drifts over time, so changes should be checked against the real
+mobile layout before shipping. `claude_web_dom_dump.py` does that: it launches a
+headless Chrome at a phone-width (412px) viewport, injects the userscript exactly
+as a userscript manager would, and writes a screenshot plus a tap-target
+inventory (flagging any control under the 44px floor).
+
+```
+pip install websockets
+python3 claude_web_dom_dump.py \
+  --profile /path/to/chrome-profile-signed-in-to-claude \
+  --inject-userjs claude-code-mobile.user.js --dark
+```
+
+Point `--profile` at a Chrome user-data-dir already signed in to claude.ai (the
+on-disk session cookie is what lets the headless run reach the app). Outputs land
+in `/tmp/claude_web_dump.{png,json,html}`. The script header documents the full
+flag set — open a session, fill the composer, simulate the soft keyboard, or dump
+an element's box model up its ancestor chain.
+
 ## Notes
 
 - The styling targets stable `aria-label` / `data-testid` / `role` hooks rather
