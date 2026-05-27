@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.10.0
+// @version      1.11.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -184,17 +184,19 @@ GM_addStyle(`
     display: none !important;
   }
 
-  /* 13. The Send / Stop button is the primary composer action but ships small.
-     Give it a generous 56px finger target. Target the button by its slot
-     (.epitaxy-prompt .self-end button) so it covers both the Send arrow and the
-     Stop square the slot toggles between, plus the explicit labels. NOTE: the
-     button is the composer box's height driver, so 56px here makes the box 56px
-     tall (rule 9 keeps it hugging the button with no extra padding). */
+  /* 13. The Send / Stop button is the primary composer action. Give it a 44px
+     finger target shaped as a circle (border-radius:full) rather than the stock
+     rounded-rect, so the coral accent (rule 17) reads as a tidy disc instead of
+     a heavy slab. The .btn-squish fill span inherits the radius (rounded-
+     [inherit]). Target the button by its slot (.epitaxy-prompt .self-end button)
+     so it covers both the Send arrow and the Stop square, plus the labels. NOTE:
+     the button drives the composer box height, so 44px keeps the box compact. */
   .epitaxy-prompt .self-end button,
   [aria-label="Send"],
   [aria-label="Stop"] {
-    min-width: 56px !important;
-    min-height: 56px !important;
+    min-width: 44px !important;
+    min-height: 44px !important;
+    border-radius: 9999px !important;
   }
 
   /* 14. Transcript spacing is driven by gap-[var(--chat-item-gap)], which the
