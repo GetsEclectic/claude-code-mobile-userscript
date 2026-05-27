@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.20.0
+// @version      1.21.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -323,7 +323,13 @@ GM_addStyle(`
      box), and rule 2's min-height:44px was never overridden so it stayed 44px tall
      — the 12px glyph then floated in a 44px square. So pin BOTH width AND height to
      30px and drop the mins to 0; the absolute inset-0 fill span follows the box
-     down. Verified empirically: box goes 44->30 with the glyph hugged. */
+     down. Verified empirically: box goes 44->30 with the glyph hugged.
+
+     margin-left:6px gives the box a small left gutter inside the rounded composer
+     box so it isn't jammed against the left border — matched to the ~6px gutter
+     the Send button leaves on the right, so the two icon controls read as
+     symmetric instead of the "+" hugging the wall. Verified: + left edge and Send
+     right edge both sit 6px inside the .epitaxy-prompt box. */
   .epitaxy-prompt button[aria-label="Add"] {
     align-self: center !important;
     flex: 0 0 auto !important;
@@ -331,7 +337,7 @@ GM_addStyle(`
     height: 30px !important;
     min-width: 0 !important;
     min-height: 0 !important;
-    margin-left: 0 !important;
+    margin-left: 6px !important;
     margin-right: 0 !important;
     position: relative !important;
   }
