@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.19.0
+// @version      1.20.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -191,10 +191,17 @@ GM_addStyle(`
      overflow:hidden + min-height:0 applied even with the keyboard down) collapses
      the sidebar's flex-1 Recents list to zero height (blank sidebar) and clips
      the composer's +/attachment and context popovers. Keyboard-down must be the
-     app's stock layout, untouched. */
-  html.ccm-kb-open,
-  html.ccm-kb-open body.min-h-screen,
-  html.ccm-kb-open .epitaxy-root {
+     app's stock layout, untouched.
+
+     ALSO gated on :not(.ccm-drawer-open): the first-tap-opens-menu fix keeps the
+     composer focused (keyboard up) while the sidebar drawer opens, so .ccm-kb-open
+     is still set when the drawer is showing. With the height pin active, the
+     drawer's flex-1 Recents list collapses to zero (blank void under "Customize").
+     The companion below adds .ccm-drawer-open while the drawer is open; suspending
+     this height pin then restores the Recents list. */
+  html.ccm-kb-open:not(.ccm-drawer-open),
+  html.ccm-kb-open:not(.ccm-drawer-open) body.min-h-screen,
+  html.ccm-kb-open:not(.ccm-drawer-open) .epitaxy-root {
     height: var(--ccm-vvh, 100dvh) !important;
     min-height: 0 !important;
     overflow: hidden !important;
@@ -307,11 +314,23 @@ GM_addStyle(`
      text, and trim the margins. A transparent ::after restores the finger target
      (hit-slop reaching left/up/down past the chip) without the visual bulk — same
      trick as rule 10. Right slop stays 0 so it never steals taps from the
-     textarea sitting immediately to its right. */
+     textarea sitting immediately to its right.
+
+     The 44px dead space Ben kept seeing was NOT min-width: the app sizes this
+     button with an explicit width:44px;height:44px (size-11), and rule 2 reinforces
+     it with min-width/min-height:44px. Setting only min-width:28px left the
+     explicit 44px width standing (a min floor can't shrink an explicitly-sized
+     box), and rule 2's min-height:44px was never overridden so it stayed 44px tall
+     — the 12px glyph then floated in a 44px square. So pin BOTH width AND height to
+     30px and drop the mins to 0; the absolute inset-0 fill span follows the box
+     down. Verified empirically: box goes 44->30 with the glyph hugged. */
   .epitaxy-prompt button[aria-label="Add"] {
     align-self: center !important;
     flex: 0 0 auto !important;
-    min-width: 28px !important;
+    width: 30px !important;
+    height: 30px !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
     margin-left: 0 !important;
     margin-right: 0 !important;
     position: relative !important;
@@ -390,6 +409,37 @@ GM_addStyle(`
     }
   }
   vv.addEventListener('resize', sync);
+  sync();
+})();
+
+/* Companion to rule 11's :not(.ccm-drawer-open) guard. The first-tap-opens-menu
+   fix further down keeps the composer focused when the sidebar drawer opens (so
+   the click lands on the first tap), which means the keyboard stays up and
+   .ccm-kb-open lingers while the drawer is showing. With rule 11's height pin
+   still armed, the drawer's flex-1 Recents list collapses below the clamped
+   viewport and reads as a blank void under "Customize". Toggle .ccm-drawer-open
+   on <html> whenever the drawer is open so rule 11 suspends and the Recents
+   render at full height. Open state is read off the stable aria-expanded on the
+   "Open sidebar" button (true = open) — a discrete attribute, so it's immune to
+   the opacity transition the drawer panel animates through (computed opacity
+   would read an intermediate value mid-animation). Verified empirically: with
+   .ccm-kb-open set + drawer open, .epitaxy-root clamps to 400px (recents clipped)
+   without this class and returns to natural height with it. */
+(function () {
+  var de = document.documentElement;
+  function sync() {
+    de.classList.toggle('ccm-drawer-open',
+      !!document.querySelector('[aria-label="Open sidebar"][aria-expanded="true"]'));
+  }
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; sync(); });
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    attributes: true, attributeFilter: ['aria-expanded'], subtree: true,
+  });
   sync();
 })();
 
