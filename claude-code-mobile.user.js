@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.28.0
+// @version      1.29.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -465,6 +465,22 @@ GM_addStyle(`
       prevH = vv.height;
       return;
     }
+    // First-tap-opens-menu guard. While a tap on the sidebar toggle is in
+    // flight, freeze our reaction to the keyboard-close resize. The tap's click
+    // is confirmed to fire on touch (scripts/ptr_preventdefault_probe.py truth
+    // table), so the menu DID receive the click — but reacting to the resize
+    // here (nudging the scroller, releasing rule 11's height pin) moves content
+    // under the finger mid-gesture, and the browser then reclassifies the tap as
+    // a scroll and cancels the click, so the drawer only opened on the second
+    // tap. Holding the layout perfectly still through the tap lets the first
+    // click land. Armed unconditionally by the sidebar-tap handler below (NOT
+    // gated on ccm-kb-open) so it still fires if keyboard detection is off on a
+    // given device. Keep prevH current so the post-guard resize computes its
+    // delta from here — no scroll jump once the guard lifts.
+    if (Date.now() < (window.__ccmSidebarTapUntil || 0)) {
+      prevH = vv.height;
+      return;
+    }
     maxH = Math.max(maxH, fullHeight());
     var kbOpen = (maxH - vv.height) > 150;
     de.classList.toggle('ccm-kb-open', kbOpen);
@@ -606,27 +622,38 @@ GM_addStyle(`
    "Open sidebar" button) only dismisses the keyboard — it takes a second tap to
    actually open the drawer.
 
-   Cause: tapping the button blurs the focused composer, which closes the
-   keyboard; the resulting visualViewport resize (handled by the rule-11
-   companion above) reflows the layout and nudges the scroller mid-gesture, and
-   that shift swallows the click before it reaches the button.
+   What's actually happening (settled empirically, scripts/ptr_preventdefault_-
+   probe.py): on touch the button's click DOES fire on the first tap, with or
+   without preventDefault — so the click is not being suppressed, it's reaching
+   the menu. The drawer fails to open because the rule-11 companion above reacts
+   to the keyboard-close resize mid-gesture — it nudges the transcript scroller
+   (scrollTop += delta) and releases its height pin — which moves content under
+   the finger, and the browser then treats the tap as a scroll and cancels the
+   already-fired click. The previous build tried to stop this by preventDefault-
+   ing pointerdown to keep the composer focused (so the keyboard never closes and
+   no resize fires); that holds in a desktop-touch sandbox but did NOT keep the
+   keyboard up on the real phone, so the resize-reflow still ran and still ate
+   the tap.
 
-   Fix: while the keyboard is up (html.ccm-kb-open — the same switch rule 11
-   uses), preventDefault on the button's pointerdown so the composer keeps focus
-   and the keyboard does NOT close on this tap. With no blur there's no resize,
-   no reflow, so the click lands and the drawer opens on the first tap. We do NOT
-   dismiss the keyboard ourselves: opening the drawer moves focus into it (React
-   focus-trap), which drops the keyboard on its own. An earlier build blurred the
-   composer here to force the keyboard down, but that resize reflowed the page a
-   frame after the drawer opened and the drawer read it as an outside tap — so
-   the menu opened and then immediately closed itself. Strictly gated on
-   ccm-kb-open: with the keyboard down this is a no-op and the stock tap is
-   untouched, so it can't regress the common case. */
+   Fix (two layers, robust to whether the keyboard actually closes):
+     1. Arm window.__ccmSidebarTapUntil for ~700ms on a sidebar-toggle
+        pointerdown. The rule-11 companion checks it and freezes its resize
+        reaction for that window, so the layout stays perfectly still and the
+        first tap's click lands. Armed UNCONDITIONALLY (not gated on ccm-kb-open)
+        so it still works if keyboard detection is off on a given device.
+     2. Keep the preventDefault while ccm-kb-open: where the platform honors it
+        the keyboard never closes and no resize fires at all (best case). It's
+        confirmed harmless on touch (does not suppress the click).
+   We do NOT blur/force the keyboard down ourselves: opening the drawer moves
+   focus into it (React focus-trap), dropping the keyboard on its own. An earlier
+   build that forced the keyboard down here reflowed a frame after the drawer
+   opened and the drawer read it as an outside tap, closing itself. */
 (function () {
   var SEL = '[aria-label="Open sidebar"]';
   document.addEventListener('pointerdown', function (e) {
-    if (!document.documentElement.classList.contains('ccm-kb-open')) return;
     if (!e.target || !e.target.closest || !e.target.closest(SEL)) return;
-    e.preventDefault(); // keep the composer focused -> no keyboard-close reflow -> the click lands
+    window.__ccmSidebarTapUntil = Date.now() + 700; // freeze rule-11 through the tap
+    if (!document.documentElement.classList.contains('ccm-kb-open')) return;
+    e.preventDefault(); // keep the composer focused where honored -> no resize at all
   }, true);
 })();
