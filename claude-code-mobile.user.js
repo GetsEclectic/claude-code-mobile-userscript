@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.13.0
+// @version      1.14.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -140,18 +140,25 @@ GM_addStyle(`
     align-self: center !important;
   }
 
-  /* 10. The top-left menu (sidebar toggle) is tapped constantly to switch
-     sessions, so it wants a generous target. It ships as size-7 (a 28px box).
-     Size ONLY the button to a 50px box: the aside is position:absolute and
-     shrink-wraps to its content, so it grows to 50x50 too (verified). Do NOT
-     put a size on aside.dframe-sidebar itself — that same element IS the
-     expanded sidebar panel, so freezing it to 50x50 clamps the opened session
-     list to a 50px box and it renders blank. */
+  /* 10. The top-left menu (sidebar toggle) ships as size-7 (a 28px box) with a
+     transparent background, so it (a) doesn't line up with the title bar and
+     (b) blends into the bar — no distinct surface. The title bar
+     [data-top-left="true"] is h:32 at y:9 (center y≈25) and reserves a 32px-wide
+     gutter (its margin-left:32px) for this button. So size the button to a 32px
+     square: it fills the reserved gutter, its center lands on the bar's center
+     (aligned), and it stops hanging below the bar (the old 50px box spanned to
+     y:60, 19px past the 32px bar). Add a translucent grey chip so it reads as a
+     control against the bar in BOTH themes — alpha over the dark bar lightens it,
+     over the light bar darkens it. Size ONLY the button: the aside is
+     position:absolute and shrink-wraps to its content. Do NOT put a size on
+     aside.dframe-sidebar itself — that same element IS the expanded sidebar
+     panel, so freezing it clamps the opened session list and it renders blank. */
   aside.dframe-sidebar [aria-label="Open sidebar"] {
-    height: 50px !important;
-    min-height: 50px !important;
-    width: 50px !important;
-    min-width: 50px !important;
+    height: 32px !important;
+    min-height: 32px !important;
+    width: 32px !important;
+    min-width: 32px !important;
+    background: rgba(128, 128, 128, 0.2) !important;
   }
 
   /* 11. Soft keyboard handling. The app pins its whole layout to height:100dvh,
