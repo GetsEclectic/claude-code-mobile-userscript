@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.22.0
+// @version      1.23.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -362,6 +362,21 @@ GM_addStyle(`
   }
   .epitaxy-prompt .relative.flex.w-full {
     gap: 0 !important;
+  }
+
+  /* 19. The session-actions dropdown — the "little arrow" menu next to the
+     in-session title (Open in / Rename / Color / Transcript view / Copy link /
+     Edit environment / Archive / Delete). Its rows are role="menuitem", so rule 1
+     already lifts their label to 16px — but rule 4's 40px min-height floor only
+     covers button / [role="button"], never menuitem, so the rows keep their stock
+     3px py padding and render ~27px tall: a cramped, easy-to-mis-tap target. Bump
+     the label a touch more and give each row a 40px finger-height. The row is
+     already display:flex / items-center (its own classes), so min-height vertically
+     centers the label rather than stretching it, and the submenu-arrow rows
+     (justify-between) keep their layout. */
+  [role="menuitem"] {
+    font-size: 17px !important;
+    min-height: 40px !important;
   }
 }
 `);
