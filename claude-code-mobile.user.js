@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.26.0
+// @version      1.27.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -38,7 +38,7 @@ GM_addStyle(`
   /* 2. Icon-only buttons get a real 44x44 finger target. */
   [aria-label="Send"], [aria-label="Add"], [aria-label="Copy message"],
   [aria-label="Pin as chapter"], [aria-label="Session actions"],
-  [aria-label="Dismiss question"], [aria-label="Scroll to bottom"],
+  [aria-label="Dismiss question"],
   [aria-label="Open sidebar"], [aria-label="Close side chat"],
   [aria-label="Share"], [aria-label="Views"], [aria-label="Filter"],
   [aria-label="Dismiss"], [aria-label^="Usage"], [aria-label^="More options"] {
@@ -59,6 +59,19 @@ GM_addStyle(`
      dense ~20px chips grow vertically into something tappable. */
   button, [role="button"] {
     min-height: 40px !important;
+  }
+
+  /* 4b. The native "Scroll to bottom" pill is an absolute overlay anchored at
+     top:-32px and sized to its own ~24px height, so it sits cleanly in the
+     transcript just above the composer dock. Rules 2 and 4 used to inflate it
+     to a 44/40px finger target, but its anchor is fixed for the 24px height —
+     the taller box overflowed downward into the dock and upward into the
+     transcript, surfacing as a stray floating chevron box straddling the last
+     transcript line (it's a transient overlay, not a primary tap target). Keep
+     it native; specificity (0,1,0) outranks rule 4's bare `button`. */
+  [aria-label="Scroll to bottom"] {
+    min-width: 0 !important;
+    min-height: 0 !important;
   }
 
   /* 5. Home Sessions / Pull-requests rows: stock claude.ai/code overlaps the
