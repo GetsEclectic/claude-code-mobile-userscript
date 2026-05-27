@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.25.0
+// @version      1.26.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -550,14 +550,21 @@ GM_addStyle(`
    underlying page WITHOUT closing the drawer — so you're left staring at the
    menu sitting on top of freshly-changed content, and the in-drawer list often
    blanks during the route change ("the sessions disappear but the menu stays
-   open"). The app already dismisses the drawer on Escape, so after a row tap we
-   fire Escape ourselves.
+   open"). So after a row tap we close the drawer ourselves by re-clicking its
+   toggle.
+
+   We do NOT dispatch a synthetic Escape: Escape is also Claude Code's
+   stop-generation key, so firing it here cancelled any in-flight turn (showed up
+   as a stray "Request interrupted by user" mid-task). Re-clicking the toggle
+   routes through the app's own close handler and never touches the keyboard path,
+   so a running turn is untouched.
 
    Two guards keep it from firing where it shouldn't: width <= 900 (desktop keeps
    a persistent sidebar — never auto-close it), and a still-open check (a menu row
-   still painted on-screen) so a stray Escape can't dismiss some unrelated popover
-   when the drawer already closed on its own. The tap is let through untouched and
-   the Escape is deferred a tick so the app's own navigation runs first. */
+   still painted on-screen) — which also ensures the toggle CLOSES the drawer
+   rather than re-opening it when it already closed on its own. The tap is let
+   through untouched and the dismiss is deferred a tick so the app's own
+   navigation runs first. */
 (function () {
   var ROW = 'aside[aria-label="Sidebar"] button[data-row-main-button]';
   function drawerOpen() {
@@ -571,12 +578,8 @@ GM_addStyle(`
   }
   function dismiss() {
     if (window.innerWidth > 900 || !drawerOpen()) return;
-    ['keydown', 'keyup'].forEach(function (type) {
-      document.dispatchEvent(new KeyboardEvent(type, {
-        key: 'Escape', code: 'Escape', keyCode: 27, which: 27,
-        bubbles: true, cancelable: true,
-      }));
-    });
+    var toggle = document.querySelector('[aria-label="Open sidebar"]');
+    if (toggle) toggle.click(); // app's own close path — not Escape (would stop a running turn)
   }
   document.addEventListener('click', function (e) {
     if (window.innerWidth > 900) return;
