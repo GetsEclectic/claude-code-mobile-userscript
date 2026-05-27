@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.12.0
+// @version      1.13.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -123,16 +123,21 @@ GM_addStyle(`
     font-size: 13px !important;
   }
 
-  /* 9. The send-slot (.self-end) wraps the send button with p-p7 padding — ~10px
-     on each side. The top/bottom padding would stack onto the 56px button (rule
-     13) and inflate the box past the button height, and the right ~10px is dead
-     space between the icon and the composer's edge (the gap rule 7 notes). Zero
-     the vertical padding so the box hugs the button, and trim the right gap so
-     the bigger button doesn't push toward the edge with wasted space beside it. */
+  /* 9. The send-slot (the app's own .self-end class) wraps the send button with
+     p-p7 padding — ~10px on each side. The top/bottom padding inflates the box
+     past the button height, and the right ~10px is dead space between the icon
+     and the composer's edge (the gap rule 7 notes). Zero the vertical padding so
+     the box hugs the button, and trim the right gap so the button doesn't push
+     toward the edge with wasted space beside it. ALSO override the app's
+     align-self:flex-end → center: the input grows up to its 218px cap, and at
+     bottom-anchor the button strands itself at the very bottom of a tall
+     composer with a big empty gap above it (looks lopsided on multi-line input).
+     Centering keeps it beside the vertical middle of the text instead. */
   .epitaxy-prompt .self-end {
     padding-top: 0 !important;
     padding-bottom: 0 !important;
     padding-right: 6px !important;
+    align-self: center !important;
   }
 
   /* 10. The top-left menu (sidebar toggle) is tapped constantly to switch
@@ -184,18 +189,20 @@ GM_addStyle(`
     display: none !important;
   }
 
-  /* 13. The Send / Stop button is the primary composer action. Give it a 40px
+  /* 13. The Send / Stop button is the primary composer action. Give it a 34px
      finger target shaped as a circle (border-radius:full) rather than the stock
      rounded-rect, so the coral accent (rule 17) reads as a tidy disc instead of
      a heavy slab. The .btn-squish fill span inherits the radius (rounded-
      [inherit]). Target the button by its slot (.epitaxy-prompt .self-end button)
-     so it covers both the Send arrow and the Stop square, plus the labels. NOTE:
-     the button drives the composer box height, so 40px keeps the box compact. */
+     so it covers both the Send arrow and the Stop square, plus the labels. 34px
+     is a deliberate compromise: 40px read as too heavy a disc, the stock 24px is
+     too small a tap target — 34px keeps the composer compact while staying
+     comfortably tappable. */
   .epitaxy-prompt .self-end button,
   [aria-label="Send"],
   [aria-label="Stop"] {
-    min-width: 40px !important;
-    min-height: 40px !important;
+    min-width: 34px !important;
+    min-height: 34px !important;
     border-radius: 9999px !important;
   }
 
