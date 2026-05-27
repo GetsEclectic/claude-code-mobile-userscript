@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.14.0
+// @version      1.15.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -152,13 +152,27 @@ GM_addStyle(`
      over the light bar darkens it. Size ONLY the button: the aside is
      position:absolute and shrink-wraps to its content. Do NOT put a size on
      aside.dframe-sidebar itself — that same element IS the expanded sidebar
-     panel, so freezing it clamps the opened session list and it renders blank. */
+     panel, so freezing it clamps the opened session list and it renders blank.
+     The visible chip stays 32px (bar-aligned), but 32px is a small touch target,
+     so a transparent ::after extends the HIT AREA past the chip (hit-slop): the
+     pseudo is part of the button, so taps in the slop still fire the button. Slop
+     reaches the screen's left edge and ~8px above/below, but stops at the chip's
+     right edge so it never steals taps from the title text in the gutter. */
   aside.dframe-sidebar [aria-label="Open sidebar"] {
     height: 32px !important;
     min-height: 32px !important;
     width: 32px !important;
     min-width: 32px !important;
     background: rgba(128, 128, 128, 0.2) !important;
+    position: relative !important;
+  }
+  aside.dframe-sidebar [aria-label="Open sidebar"]::after {
+    content: "" !important;
+    position: absolute !important;
+    top: -8px !important;
+    bottom: -8px !important;
+    left: -8px !important;
+    right: 0 !important;
   }
 
   /* 11. Soft keyboard handling. The app pins its whole layout to height:100dvh,
