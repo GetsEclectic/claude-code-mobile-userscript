@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.16.0
+// @version      1.17.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -402,4 +402,47 @@ GM_addStyle(`
     childList: true, subtree: true,
   });
   relocate();
+})();
+
+/* Dismiss the sidebar drawer after a nav-row tap (mobile only).
+
+   On phone widths the sidebar is an overlay drawer, but tapping one of its nav
+   rows (New session / Routines / Customize / a recent session) navigates the
+   underlying page WITHOUT closing the drawer — so you're left staring at the
+   menu sitting on top of freshly-changed content, and the in-drawer list often
+   blanks during the route change ("the sessions disappear but the menu stays
+   open"). The app already dismisses the drawer on Escape, so after a row tap we
+   fire Escape ourselves.
+
+   Two guards keep it from firing where it shouldn't: width <= 900 (desktop keeps
+   a persistent sidebar — never auto-close it), and a still-open check (a menu row
+   still painted on-screen) so a stray Escape can't dismiss some unrelated popover
+   when the drawer already closed on its own. The tap is let through untouched and
+   the Escape is deferred a tick so the app's own navigation runs first. */
+(function () {
+  var ROW = 'aside[aria-label="Sidebar"] button[data-row-main-button]';
+  function drawerOpen() {
+    var rows = document.querySelectorAll(ROW);
+    for (var i = 0; i < rows.length; i++) {
+      if (!rows[i].offsetParent) continue; // display:none / detached
+      var r = rows[i].getBoundingClientRect();
+      if (r.width > 0 && r.left >= 0 && r.left < window.innerWidth) return true;
+    }
+    return false;
+  }
+  function dismiss() {
+    if (window.innerWidth > 900 || !drawerOpen()) return;
+    ['keydown', 'keyup'].forEach(function (type) {
+      document.dispatchEvent(new KeyboardEvent(type, {
+        key: 'Escape', code: 'Escape', keyCode: 27, which: 27,
+        bubbles: true, cancelable: true,
+      }));
+    });
+  }
+  document.addEventListener('click', function (e) {
+    if (window.innerWidth > 900) return;
+    var t = e.target;
+    if (!t || !t.closest || !t.closest(ROW)) return;
+    setTimeout(dismiss, 350); // let the app's navigation handler run first
+  }, true);
 })();
