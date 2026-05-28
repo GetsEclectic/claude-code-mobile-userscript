@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.33.0
+// @version      1.33.1
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -466,11 +466,14 @@ GM_addStyle(`
     if (document.getElementById('ccm-dbg-overlay')) return;
     var el = document.createElement('div');
     el.id = 'ccm-dbg-overlay';
+    // Top-RIGHT: must not cover the "Open sidebar" button (top-left) — that's
+    // the very tap the repro needs. pointer-events:none keeps the model
+    // selector (also top-right) clickable through the overlay.
     el.style.cssText = [
-      'position:fixed','top:0','left:0','z-index:2147483647',
-      'background:rgba(0,0,0,0.78)','color:#0f0','font:11px/1.25 monospace',
-      'padding:4px 6px','max-width:60vw','pointer-events:none',
-      'white-space:pre','border:1px solid #0f0','border-radius:0 0 4px 0',
+      'position:fixed','top:0','right:0','z-index:2147483647',
+      'background:rgba(0,0,0,0.78)','color:#0f0','font:10px/1.2 monospace',
+      'padding:3px 5px','max-width:62vw','pointer-events:none',
+      'white-space:pre','border:1px solid #0f0','border-radius:0 0 0 4px',
     ].join(';');
     (document.body || document.documentElement).appendChild(el);
   }
