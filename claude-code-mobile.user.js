@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.39.0
+// @version      1.40.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -525,7 +525,7 @@ GM_addStyle(`
   }
   function dump() {
     var payload = {
-      ver: '1.38.0',
+      ver: '1.40.0',
       dumpedAt: new Date().toISOString(),
       ua: navigator.userAgent,
       hist: JSON.parse(localStorage.getItem(HIST_KEY) || '[]'),
@@ -687,6 +687,12 @@ GM_addStyle(`
     wasOpen = kbOpen;
   }
   vv.addEventListener('resize', sync);
+  // Also listen to 'scroll' — visualViewport.offsetTop changes (visual viewport
+  // pans within the layout viewport) fire vv.scroll, NOT vv.resize. The C
+  // black-gap bug is triggered exactly this way: after the drawer dismiss the
+  // last r11.sync sees off=0, then vv.offsetTop silently jumps to ~334 with no
+  // resize event, so --ccm-vvh stays at vv.height and body ends 334px short.
+  vv.addEventListener('scroll', sync);
   sync();
 })();
 
