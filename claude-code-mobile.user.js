@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.40.0
+// @version      1.41.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -476,7 +476,7 @@ GM_addStyle(`
     events: ring,
   };
   var HIST_KEY = 'ccmHist';
-  var HIST_MAX = 30;
+  var HIST_MAX = 600;
   function pushHist(snap) {
     try {
       var hist = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
@@ -495,7 +495,9 @@ GM_addStyle(`
   function snapshot() {
     var vv = window.visualViewport;
     var de = document.documentElement;
-    var vvh = getComputedStyle(de).getPropertyValue('--ccm-vvh').trim() || '';
+    var cs = getComputedStyle(de);
+    var vvh = cs.getPropertyValue('--ccm-vvh').trim() || '';
+    var htmlH = parseFloat(cs.height) || null;
     var guard = Math.max(0, (window.__ccmSidebarTapUntil || 0) - Date.now());
     // Drain the event ring into the snapshot so each saved entry carries
     // both layout state and the events that fired in the preceding tick.
@@ -505,7 +507,10 @@ GM_addStyle(`
       vv: vv ? Math.round(vv.height) : null,
       vvOff: vv ? { x: Math.round(vv.offsetLeft), y: Math.round(vv.offsetTop) } : null,
       inH: window.innerHeight,
+      sY: Math.round(window.scrollY || 0),
+      dsT: Math.round(de.scrollTop || 0),
       vvh: vvh,
+      htmlH: htmlH != null ? Math.round(htmlH) : null,
       max: window.__ccmMaxH != null ? window.__ccmMaxH : null,
       kb: de.classList.contains('ccm-kb-open') ? 1 : 0,
       dr: de.classList.contains('ccm-drawer-open') ? 1 : 0,
@@ -519,13 +524,13 @@ GM_addStyle(`
     };
   }
   function tick() {
-    if (Date.now() - lastSaveT < 1000) return;
+    if (Date.now() - lastSaveT < 500) return;
     lastSaveT = Date.now();
     pushHist(snapshot());
   }
   function dump() {
     var payload = {
-      ver: '1.40.0',
+      ver: '1.41.0',
       dumpedAt: new Date().toISOString(),
       ua: navigator.userAgent,
       hist: JSON.parse(localStorage.getItem(HIST_KEY) || '[]'),
@@ -573,7 +578,7 @@ GM_addStyle(`
     }, true);
     document.documentElement.appendChild(btn);
   }
-  setInterval(tick, 1000);
+  setInterval(tick, 500);
   setInterval(mkDumpBtn, 500); // re-attach if the SPA blows it away
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () { tick(); mkDumpBtn(); });
