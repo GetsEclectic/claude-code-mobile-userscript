@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.41.0
+// @version      1.42.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -492,6 +492,76 @@ GM_addStyle(`
     var r = n.getBoundingClientRect();
     return { y: Math.round(r.top), h: Math.round(r.height) };
   }
+  // v1.42: full rect (x,y,w,h) + computed position/top/bottom/transform/zIndex —
+  // bug persists with body/prompt geometry looking normal, so the broken element
+  // must be repositioned by app JS in a way getBoundingClientRect of those
+  // specific selectors doesn't capture. Probe more, probe deeper.
+  function rectFull(sel) {
+    var n = document.querySelector(sel);
+    if (!n) return null;
+    var r = n.getBoundingClientRect();
+    var cs = getComputedStyle(n);
+    return {
+      x: Math.round(r.left), y: Math.round(r.top),
+      w: Math.round(r.width), h: Math.round(r.height),
+      pos: cs.position,
+      top: cs.top, bot: cs.bottom, left: cs.left, right: cs.right,
+      tf: cs.transform === 'none' ? '' : cs.transform,
+      z: cs.zIndex,
+      ovY: cs.overflowY,
+    };
+  }
+  // What is painted at (x,y)? Returns the topmost ~3 elements in CSS px.
+  // Used to identify the composer's actual DOM node and what fills the gap.
+  function elsAt(x, y) {
+    var out = [];
+    try {
+      var els = document.elementsFromPoint(x, y) || [];
+      for (var i = 0; i < els.length && i < 3; i++) {
+        var e = els[i];
+        var r = e.getBoundingClientRect();
+        var tag = e.tagName.toLowerCase();
+        var id = e.id ? '#' + e.id : '';
+        var cls = (e.className && typeof e.className === 'string')
+          ? '.' + e.className.split(/\s+/).slice(0, 2).join('.') : '';
+        out.push({
+          sel: tag + id + cls,
+          y: Math.round(r.top), h: Math.round(r.height),
+          pos: getComputedStyle(e).position,
+        });
+      }
+    } catch (e) {}
+    return out;
+  }
+  // All position:fixed elements with non-zero size — the actual composer may
+  // be a fixed layer outside .epitaxy-prompt.
+  function fixedScan() {
+    var out = [];
+    try {
+      var all = document.querySelectorAll('body *');
+      for (var i = 0; i < all.length; i++) {
+        var n = all[i];
+        var cs = getComputedStyle(n);
+        if (cs.position !== 'fixed') continue;
+        var r = n.getBoundingClientRect();
+        if (r.width < 10 || r.height < 10) continue;
+        var tag = n.tagName.toLowerCase();
+        var id = n.id ? '#' + n.id : '';
+        var cls = (n.className && typeof n.className === 'string')
+          ? '.' + n.className.split(/\s+/).slice(0, 2).join('.') : '';
+        out.push({
+          sel: tag + id + cls,
+          x: Math.round(r.left), y: Math.round(r.top),
+          w: Math.round(r.width), h: Math.round(r.height),
+          top: cs.top, bot: cs.bottom,
+          tf: cs.transform === 'none' ? '' : cs.transform,
+          z: cs.zIndex,
+        });
+        if (out.length > 12) break;
+      }
+    } catch (e) {}
+    return out;
+  }
   function snapshot() {
     var vv = window.visualViewport;
     var de = document.documentElement;
@@ -499,6 +569,8 @@ GM_addStyle(`
     var vvh = cs.getPropertyValue('--ccm-vvh').trim() || '';
     var htmlH = parseFloat(cs.height) || null;
     var guard = Math.max(0, (window.__ccmSidebarTapUntil || 0) - Date.now());
+    var iw = window.innerWidth;
+    var vh = vv ? vv.height : window.innerHeight;
     // Drain the event ring into the snapshot so each saved entry carries
     // both layout state and the events that fired in the preceding tick.
     var events = ring.splice(0, ring.length);
@@ -507,19 +579,34 @@ GM_addStyle(`
       vv: vv ? Math.round(vv.height) : null,
       vvOff: vv ? { x: Math.round(vv.offsetLeft), y: Math.round(vv.offsetTop) } : null,
       inH: window.innerHeight,
+      iw: iw,
       sY: Math.round(window.scrollY || 0),
       dsT: Math.round(de.scrollTop || 0),
+      bsH: Math.round(document.body ? document.body.scrollHeight : 0),
+      deSH: Math.round(de.scrollHeight || 0),
       vvh: vvh,
       htmlH: htmlH != null ? Math.round(htmlH) : null,
       max: window.__ccmMaxH != null ? window.__ccmMaxH : null,
       kb: de.classList.contains('ccm-kb-open') ? 1 : 0,
       dr: de.classList.contains('ccm-drawer-open') ? 1 : 0,
       guard: guard,
-      body: rect('body'),
-      root: rect('.epitaxy-root'),
-      chatSize: rect('.epitaxy-chat-size'),
-      markdown: rect('.epitaxy-markdown'),
-      prompt: rect('.epitaxy-prompt'),
+      // Full computed-style probes — the bug is in something we weren't
+      // measuring before, so dump position/top/bottom/transform/zIndex.
+      body: rectFull('body'),
+      root: rectFull('.epitaxy-root'),
+      chatSize: rectFull('.epitaxy-chat-size'),
+      markdown: rectFull('.epitaxy-markdown'),
+      prompt: rectFull('.epitaxy-prompt'),
+      // What's painted in the gap region? Sample three Y-coords:
+      //   - just above the bottom of the visual viewport (where composer
+      //     SHOULD be when bug is absent)
+      //   - middle of the (suspected) black gap
+      //   - just inside the top of the visual viewport
+      atBot: elsAt(Math.round(iw / 2), Math.round(vh) - 20),
+      atMid: elsAt(Math.round(iw / 2), Math.round(vh / 2)),
+      atTop: elsAt(Math.round(iw / 2), 80),
+      // All fixed-position layers — composer may not be .epitaxy-prompt.
+      fix: fixedScan(),
       events: events,
     };
   }
@@ -530,7 +617,7 @@ GM_addStyle(`
   }
   function dump() {
     var payload = {
-      ver: '1.41.0',
+      ver: '1.42.0',
       dumpedAt: new Date().toISOString(),
       ua: navigator.userAgent,
       hist: JSON.parse(localStorage.getItem(HIST_KEY) || '[]'),
