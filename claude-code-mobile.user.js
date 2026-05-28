@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.33.1
+// @version      1.34.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -440,13 +440,16 @@ GM_addStyle(`
 }
 `);
 
-/* Debug overlay — v1.33.0. Off by default; activate by adding ?ccmDebug=1
+/* Debug overlay — v1.34.0. Off by default; activate by adding ?ccmDebug=1
    to the URL once (persists via localStorage.ccmDebug='1' so refreshes hold;
    clear with localStorage.removeItem('ccmDebug') in devtools or ?ccmDebug=0).
    When on, exposes window.__ccmDbg.log(type, data) — the rule-11 companion,
    drawer-state companion, and sidebar-tap handler call it; an on-page overlay
-   renders live state + the last 12 events. This is the measurement Principle V
-   demands before the next black-gap fix attempt. */
+   renders live state + bounding rects of the layout-critical elements + the
+   last 12 events. v1.34 also re-anchors the overlay each frame to
+   visualViewport.offsetLeft/Top, because position:fixed is unreliable on this
+   page (an ancestor transform/filter scopes it to that ancestor's box instead
+   of the viewport — Ben saw the overlay scroll off in the bug state). */
 (function () {
   try {
     var qs = new URLSearchParams(location.search);
@@ -477,6 +480,14 @@ GM_addStyle(`
     ].join(';');
     (document.body || document.documentElement).appendChild(el);
   }
+  function rect(sel) {
+    var n = document.querySelector(sel);
+    if (!n) return sel + ':-';
+    var r = n.getBoundingClientRect();
+    // y/h to the nearest int — that's the diagnostic resolution we need
+    return sel.replace(/^\./, '') + ':y' + Math.round(r.top) +
+      ' h' + Math.round(r.height);
+  }
   function render() {
     mkOverlay();
     var el = document.getElementById('ccm-dbg-overlay');
@@ -485,8 +496,17 @@ GM_addStyle(`
     var de = document.documentElement;
     var vvh = getComputedStyle(de).getPropertyValue('--ccm-vvh').trim() || '-';
     var guard = Math.max(0, (window.__ccmSidebarTapUntil || 0) - Date.now());
+    // Re-anchor: position:fixed is being captured by an ancestor's
+    // transform/filter (the overlay drifts off-screen in the bug state). Use
+    // visualViewport offsets each frame so the overlay tracks the visible area.
+    if (vv) {
+      var w = el.getBoundingClientRect().width || 200;
+      el.style.left = (vv.offsetLeft + vv.width - w) + 'px';
+      el.style.right = 'auto';
+      el.style.top = vv.offsetTop + 'px';
+    }
     var lines = [
-      'v1.33.0 dbg',
+      'v1.34.0 dbg',
       'vv:' + (vv ? Math.round(vv.height) : '-') +
         ' in:' + window.innerHeight +
         ' vvh:' + vvh +
@@ -494,6 +514,14 @@ GM_addStyle(`
       'kb:' + (de.classList.contains('ccm-kb-open') ? 1 : 0) +
         ' dr:' + (de.classList.contains('ccm-drawer-open') ? 1 : 0) +
         ' guard:' + guard + 'ms',
+      // Bounding rects of the layout-critical elements. In the bug state one
+      // of these (almost certainly .epitaxy-root or the chat-scroll container)
+      // will have an h or y that doesn't agree with vvh — that's the breakage.
+      rect('body'),
+      rect('.epitaxy-root'),
+      rect('.epitaxy-chat-size'),
+      rect('.epitaxy-markdown'),
+      rect('.epitaxy-prompt'),
     ];
     for (var i = 0; i < ring.length; i++) {
       var e = ring[i];
