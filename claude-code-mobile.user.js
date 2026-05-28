@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.38.0
+// @version      1.39.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -663,9 +663,17 @@ GM_addStyle(`
     window.__ccmMaxH = maxH;
     var kbOpen = (maxH - vv.height) > 150;
     de.classList.toggle('ccm-kb-open', kbOpen);
-    de.style.setProperty('--ccm-vvh', vv.height + 'px');
+    // Body height = bottom edge of the visual viewport in layout coords. When
+    // vv is anchored at the top of the layout viewport (offsetTop=0, the
+    // normal case), this is just vv.height — same as before. But the C
+    // black-gap bug repros with vv.offsetTop jumping to ~334 (visualViewport
+    // gets scrolled WITHIN the layout viewport during menu→session→menu→
+    // session nav); body sized to vv.height alone ends 334px short of the
+    // visible bottom, and that gap renders black. Adding offsetTop closes it.
+    de.style.setProperty('--ccm-vvh', (vv.height + vv.offsetTop) + 'px');
     if (window.__ccmDbg) window.__ccmDbg.log('r11.sync', {
       vv: Math.round(vv.height), max: maxH, kb: kbOpen ? 1 : 0,
+      off: Math.round(vv.offsetTop),
     });
     var delta = prevH - vv.height; // > 0 when the keyboard opens (height shrinks)
     prevH = vv.height;
