@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.42.0
+// @version      1.43.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -511,6 +511,34 @@ GM_addStyle(`
       ovY: cs.overflowY,
     };
   }
+  // v1.43: bug screenshot shows composer at visual y≈140 of a ~545-tall visible
+  // area, but rectFull('.epitaxy-prompt') reports y=831 (visual y=497). There
+  // are multiple `.epitaxy-prompt` matches and querySelector grabs the wrong
+  // one (same as .epitaxy-markdown returning y=-2187 while elementsFromPoint
+  // finds a visible .epitaxy-markdown at y=417). Probe every match.
+  function rectsAll(sel) {
+    var nodes = document.querySelectorAll(sel);
+    if (!nodes || !nodes.length) return null;
+    var out = [];
+    for (var i = 0; i < nodes.length && i < 6; i++) {
+      var n = nodes[i];
+      var r = n.getBoundingClientRect();
+      var cs = getComputedStyle(n);
+      out.push({
+        i: i,
+        x: Math.round(r.left), y: Math.round(r.top),
+        w: Math.round(r.width), h: Math.round(r.height),
+        pos: cs.position,
+        top: cs.top, bot: cs.bottom,
+        tf: cs.transform === 'none' ? '' : cs.transform,
+        z: cs.zIndex,
+        ovY: cs.overflowY,
+        vis: cs.visibility,
+        disp: cs.display,
+      });
+    }
+    return out;
+  }
   // What is painted at (x,y)? Returns the topmost ~3 elements in CSS px.
   // Used to identify the composer's actual DOM node and what fills the gap.
   function elsAt(x, y) {
@@ -593,18 +621,22 @@ GM_addStyle(`
       // Full computed-style probes — the bug is in something we weren't
       // measuring before, so dump position/top/bottom/transform/zIndex.
       body: rectFull('body'),
-      root: rectFull('.epitaxy-root'),
-      chatSize: rectFull('.epitaxy-chat-size'),
-      markdown: rectFull('.epitaxy-markdown'),
-      prompt: rectFull('.epitaxy-prompt'),
-      // What's painted in the gap region? Sample three Y-coords:
-      //   - just above the bottom of the visual viewport (where composer
-      //     SHOULD be when bug is absent)
-      //   - middle of the (suspected) black gap
-      //   - just inside the top of the visual viewport
-      atBot: elsAt(Math.round(iw / 2), Math.round(vh) - 20),
-      atMid: elsAt(Math.round(iw / 2), Math.round(vh / 2)),
-      atTop: elsAt(Math.round(iw / 2), 80),
+      // v1.43: every match for selectors that have multiples — querySelector
+      // was grabbing the wrong .epitaxy-prompt (hidden/template at y=831 while
+      // the visible one is at visual y≈140 per bug-state screenshot).
+      roots: rectsAll('.epitaxy-root'),
+      chatSizes: rectsAll('.epitaxy-chat-size'),
+      markdowns: rectsAll('.epitaxy-markdown'),
+      prompts: rectsAll('.epitaxy-prompt'),
+      // v1.43: sample y now includes vv.offsetTop so the points land inside
+      // the visible region. Previously when vvOffY=334 the "top" sample at
+      // layout y=80 was 254px above the visible area.
+      // The screenshot also tells us the real composer paints near visual
+      // y=140, so add a sample there to identify it by selector.
+      atTop: elsAt(Math.round(iw / 2), (vv ? Math.round(vv.offsetTop) : 0) + 40),
+      atCmp: elsAt(Math.round(iw / 2), (vv ? Math.round(vv.offsetTop) : 0) + 140),
+      atMid: elsAt(Math.round(iw / 2), (vv ? Math.round(vv.offsetTop) : 0) + Math.round(vh / 2)),
+      atBot: elsAt(Math.round(iw / 2), (vv ? Math.round(vv.offsetTop) : 0) + Math.round(vh) - 30),
       // All fixed-position layers — composer may not be .epitaxy-prompt.
       fix: fixedScan(),
       events: events,
@@ -617,7 +649,7 @@ GM_addStyle(`
   }
   function dump() {
     var payload = {
-      ver: '1.42.0',
+      ver: '1.43.0',
       dumpedAt: new Date().toISOString(),
       ua: navigator.userAgent,
       hist: JSON.parse(localStorage.getItem(HIST_KEY) || '[]'),
