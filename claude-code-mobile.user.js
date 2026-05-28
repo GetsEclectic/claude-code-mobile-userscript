@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.32.0
+// @version      1.33.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -440,6 +440,79 @@ GM_addStyle(`
 }
 `);
 
+/* Debug overlay — v1.33.0. Off by default; activate by adding ?ccmDebug=1
+   to the URL once (persists via localStorage.ccmDebug='1' so refreshes hold;
+   clear with localStorage.removeItem('ccmDebug') in devtools or ?ccmDebug=0).
+   When on, exposes window.__ccmDbg.log(type, data) — the rule-11 companion,
+   drawer-state companion, and sidebar-tap handler call it; an on-page overlay
+   renders live state + the last 12 events. This is the measurement Principle V
+   demands before the next black-gap fix attempt. */
+(function () {
+  try {
+    var qs = new URLSearchParams(location.search);
+    if (qs.get('ccmDebug') === '1') localStorage.setItem('ccmDebug', '1');
+    if (qs.get('ccmDebug') === '0') localStorage.removeItem('ccmDebug');
+    if (localStorage.getItem('ccmDebug') !== '1') return;
+  } catch (e) { return; }
+  var ring = []; var MAX = 12;
+  window.__ccmDbg = {
+    log: function (type, data) {
+      ring.push({ t: Date.now(), type: type, data: data || null });
+      if (ring.length > MAX) ring.shift();
+    },
+    events: ring,
+  };
+  function mkOverlay() {
+    if (document.getElementById('ccm-dbg-overlay')) return;
+    var el = document.createElement('div');
+    el.id = 'ccm-dbg-overlay';
+    el.style.cssText = [
+      'position:fixed','top:0','left:0','z-index:2147483647',
+      'background:rgba(0,0,0,0.78)','color:#0f0','font:11px/1.25 monospace',
+      'padding:4px 6px','max-width:60vw','pointer-events:none',
+      'white-space:pre','border:1px solid #0f0','border-radius:0 0 4px 0',
+    ].join(';');
+    (document.body || document.documentElement).appendChild(el);
+  }
+  function render() {
+    mkOverlay();
+    var el = document.getElementById('ccm-dbg-overlay');
+    if (!el) return;
+    var vv = window.visualViewport;
+    var de = document.documentElement;
+    var vvh = getComputedStyle(de).getPropertyValue('--ccm-vvh').trim() || '-';
+    var guard = Math.max(0, (window.__ccmSidebarTapUntil || 0) - Date.now());
+    var lines = [
+      'v1.33.0 dbg',
+      'vv:' + (vv ? Math.round(vv.height) : '-') +
+        ' in:' + window.innerHeight +
+        ' vvh:' + vvh +
+        ' max:' + (window.__ccmMaxH != null ? window.__ccmMaxH : '-'),
+      'kb:' + (de.classList.contains('ccm-kb-open') ? 1 : 0) +
+        ' dr:' + (de.classList.contains('ccm-drawer-open') ? 1 : 0) +
+        ' guard:' + guard + 'ms',
+    ];
+    for (var i = 0; i < ring.length; i++) {
+      var e = ring[i];
+      var ts = new Date(e.t).toISOString().slice(14, 23); // mm:ss.sss
+      var d = '';
+      if (e.data) {
+        var parts = [];
+        for (var k in e.data) parts.push(k + '=' + e.data[k]);
+        d = ' ' + parts.join(' ');
+      }
+      lines.push('[' + ts + '] ' + e.type + d);
+    }
+    el.textContent = lines.join('\n');
+  }
+  setInterval(render, 200);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', render);
+  } else {
+    render();
+  }
+})();
+
 /* Companion to rule 11. Two jobs, both driven off the visualViewport API (the
    only thing that reflects the soft keyboard; vh/dvh can't see it):
 
@@ -510,13 +583,20 @@ GM_addStyle(`
     // given device. Keep prevH current so the post-guard resize computes its
     // delta from here — no scroll jump once the guard lifts.
     if (Date.now() < (window.__ccmSidebarTapUntil || 0)) {
+      if (window.__ccmDbg) window.__ccmDbg.log('r11.guarded', {
+        vv: Math.round(vv.height),
+      });
       prevH = vv.height;
       return;
     }
     maxH = Math.max(maxH, fullHeight());
+    window.__ccmMaxH = maxH;
     var kbOpen = (maxH - vv.height) > 150;
     de.classList.toggle('ccm-kb-open', kbOpen);
     de.style.setProperty('--ccm-vvh', vv.height + 'px');
+    if (window.__ccmDbg) window.__ccmDbg.log('r11.sync', {
+      vv: Math.round(vv.height), max: maxH, kb: kbOpen ? 1 : 0,
+    });
     var delta = prevH - vv.height; // > 0 when the keyboard opens (height shrinks)
     prevH = vv.height;
     // Only hold the transcript bottom across an actual keyboard transition.
@@ -551,6 +631,9 @@ GM_addStyle(`
     var wasOpen = de.classList.contains('ccm-drawer-open');
     var open = !!document.querySelector('[aria-label="Open sidebar"][aria-expanded="true"]');
     de.classList.toggle('ccm-drawer-open', open);
+    if (window.__ccmDbg && wasOpen !== open) window.__ccmDbg.log('drawer', {
+      from: wasOpen ? 1 : 0, to: open ? 1 : 0,
+    });
     // Drawer just closed. The rule-11 companion's first-tap guard
     // (__ccmSidebarTapUntil) may have suppressed --ccm-vvh / .ccm-kb-open
     // updates during the open/close cycle — e.g. the keyboard-close resize
@@ -565,6 +648,9 @@ GM_addStyle(`
       try {
         var vv = window.visualViewport;
         if (vv && typeof vv.dispatchEvent === 'function') {
+          if (window.__ccmDbg) window.__ccmDbg.log('synth.resize', {
+            vv: vv ? Math.round(vv.height) : '-',
+          });
           vv.dispatchEvent(new Event('resize'));
         }
       } catch (e) { /* never let a sync race break the page */ }
@@ -665,7 +751,11 @@ GM_addStyle(`
     if (window.innerWidth > 900) return;
     var t = e.target;
     if (!t || !t.closest || !t.closest(ROW)) return;
-    setTimeout(dismiss, 350); // let the app's navigation handler run first
+    if (window.__ccmDbg) window.__ccmDbg.log('row.tap', null);
+    setTimeout(function () {
+      if (window.__ccmDbg) window.__ccmDbg.log('row.dismiss', null);
+      dismiss();
+    }, 350); // let the app's navigation handler run first
   }, true);
 })();
 
@@ -704,6 +794,7 @@ GM_addStyle(`
   document.addEventListener('pointerdown', function (e) {
     if (!e.target || !e.target.closest || !e.target.closest(SEL)) return;
     window.__ccmSidebarTapUntil = Date.now() + 700; // freeze rule-11 through the tap
+    if (window.__ccmDbg) window.__ccmDbg.log('guard.arm', { ms: 700 });
     if (!document.documentElement.classList.contains('ccm-kb-open')) return;
     e.preventDefault(); // keep the composer focused where honored -> no resize at all
   }, true);
