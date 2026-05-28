@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.29.0
+// @version      1.30.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -211,13 +211,32 @@ GM_addStyle(`
      is still set when the drawer is showing. With the height pin active, the
      drawer's flex-1 Recents list collapses to zero (blank void under "Customize").
      The companion below adds .ccm-drawer-open while the drawer is open; suspending
-     this height pin then restores the Recents list. */
+     this height pin then restores the Recents list.
+
+     The height pin also extends down into the tiles-shell container chain to close
+     a React-mount race window. When a pre-existing session is opened with the
+     keyboard already up, the companion fires just after React mounts the session
+     view. Between mount and companion-fire, the inline-styled flex-item that serves
+     as the containing block for .tiles-shell (position:absolute) may not have
+     received the new height from the cascade yet. The session column inside
+     tiles-shell uses h-full (height:100%) all the way down, so a stale containing
+     block height produces a short column — transcript fills it, dock sits at
+     content-height, void below. Pinning tiles-shell > .h-full and its .flex-col
+     child directly to var(--ccm-vvh) short-circuits the cascade dependency and
+     ensures correct height during the race window. Both selectors use child
+     combinators (>) to hit only the two specific nodes in the tiles-shell subtree,
+     not arbitrary h-full / flex-col elements deeper in the transcript. */
   html.ccm-kb-open:not(.ccm-drawer-open),
   html.ccm-kb-open:not(.ccm-drawer-open) body.min-h-screen,
   html.ccm-kb-open:not(.ccm-drawer-open) .epitaxy-root {
     height: var(--ccm-vvh, 100dvh) !important;
     min-height: 0 !important;
     overflow: hidden !important;
+  }
+  html.ccm-kb-open:not(.ccm-drawer-open) .tiles-shell > .h-full,
+  html.ccm-kb-open:not(.ccm-drawer-open) .tiles-shell > .h-full > .flex-col {
+    height: calc(var(--ccm-vvh, 100dvh) - 18px) !important;
+    min-height: 0 !important;
   }
 
   /* 12. In-session title bar reads "[repo] / [session title]". The repo is
