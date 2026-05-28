@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.34.0
+// @version      1.35.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -478,15 +478,43 @@ GM_addStyle(`
       'padding:3px 5px','max-width:62vw','pointer-events:none',
       'white-space:pre','border:1px solid #0f0','border-radius:0 0 0 4px',
     ].join(';');
-    (document.body || document.documentElement).appendChild(el);
+    // v1.35: append to documentElement (html), NOT body. position:fixed is
+    // being captured by an ancestor transform on <body>, scoping the overlay
+    // to body's box instead of the viewport — Ben saw it scroll off in the
+    // bug state even with vv.offsetLeft/Top anchoring. html has no transform
+    // and is the layout root, so fixed inside it is true to the viewport.
+    document.documentElement.appendChild(el);
+  }
+  // Bug heuristic: composer at top of an otherwise-empty viewport. Save a
+  // snapshot to localStorage + memory the FIRST time we cross into the bug
+  // state, so even if the overlay vanishes mid-bug we keep the rect data.
+  // The overlay renders the last snapshot inline once it's visible again.
+  var lastBugSnap = null;
+  var wasBuggy = false;
+  try { lastBugSnap = JSON.parse(localStorage.getItem('ccmBugSnap') || 'null'); }
+  catch (e) { lastBugSnap = null; }
+  function snapshot(promptY, lines) {
+    var snap = {
+      t: Date.now(),
+      promptY: promptY,
+      lines: lines.slice(),
+      events: ring.slice(),
+    };
+    lastBugSnap = snap;
+    try { localStorage.setItem('ccmBugSnap', JSON.stringify(snap)); }
+    catch (e) { /* localStorage full or blocked */ }
   }
   function rect(sel) {
     var n = document.querySelector(sel);
-    if (!n) return sel + ':-';
+    if (!n) return sel.replace(/^\./, '') + ':-';
     var r = n.getBoundingClientRect();
     // y/h to the nearest int — that's the diagnostic resolution we need
     return sel.replace(/^\./, '') + ':y' + Math.round(r.top) +
       ' h' + Math.round(r.height);
+  }
+  function promptTop() {
+    var n = document.querySelector('.epitaxy-prompt');
+    return n ? Math.round(n.getBoundingClientRect().top) : -1;
   }
   function render() {
     mkOverlay();
@@ -506,7 +534,7 @@ GM_addStyle(`
       el.style.top = vv.offsetTop + 'px';
     }
     var lines = [
-      'v1.34.0 dbg',
+      'v1.35.0 dbg',
       'vv:' + (vv ? Math.round(vv.height) : '-') +
         ' in:' + window.innerHeight +
         ' vvh:' + vvh +
@@ -533,6 +561,22 @@ GM_addStyle(`
         d = ' ' + parts.join(' ');
       }
       lines.push('[' + ts + '] ' + e.type + d);
+    }
+    // Bug detection: composer is at the top of an otherwise-tall viewport.
+    // Threshold 300 CSS px is comfortably below normal composer top (~766 in
+    // a 854-tall viewport) but well above the y~100 we see in bug screenshots.
+    var pY = promptTop();
+    var vh = vv ? Math.round(vv.height) : 0;
+    var buggy = pY >= 0 && pY < 300 && vh > 600;
+    if (buggy && !wasBuggy) snapshot(pY, lines);
+    wasBuggy = buggy;
+    if (lastBugSnap) {
+      var snapTs = new Date(lastBugSnap.t).toISOString().slice(11, 19);
+      lines.push('--- LAST BUG SNAP @ ' + snapTs + ' (promptY=' +
+        lastBugSnap.promptY + ') ---');
+      for (var j = 0; j < lastBugSnap.lines.length; j++) {
+        lines.push('| ' + lastBugSnap.lines[j]);
+      }
     }
     el.textContent = lines.join('\n');
   }
