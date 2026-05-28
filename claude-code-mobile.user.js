@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.31.0
+// @version      1.32.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -548,8 +548,27 @@ GM_addStyle(`
 (function () {
   var de = document.documentElement;
   function sync() {
-    de.classList.toggle('ccm-drawer-open',
-      !!document.querySelector('[aria-label="Open sidebar"][aria-expanded="true"]'));
+    var wasOpen = de.classList.contains('ccm-drawer-open');
+    var open = !!document.querySelector('[aria-label="Open sidebar"][aria-expanded="true"]');
+    de.classList.toggle('ccm-drawer-open', open);
+    // Drawer just closed. The rule-11 companion's first-tap guard
+    // (__ccmSidebarTapUntil) may have suppressed --ccm-vvh / .ccm-kb-open
+    // updates during the open/close cycle — e.g. the keyboard-close resize
+    // that fires when the drawer takes focus is bailed out and never
+    // re-applied. When the drawer closes and rule 11's height pin re-arms,
+    // the stale --ccm-vvh strands html at the old keyboard-up height even
+    // though the visible area is now larger, leaving a black gap below the
+    // composer. Force the rule-11 sync handler to re-derive from live state:
+    // clear the guard and dispatch a synthetic resize on visualViewport.
+    if (wasOpen && !open) {
+      window.__ccmSidebarTapUntil = 0;
+      try {
+        var vv = window.visualViewport;
+        if (vv && typeof vv.dispatchEvent === 'function') {
+          vv.dispatchEvent(new Event('resize'));
+        }
+      } catch (e) { /* never let a sync race break the page */ }
+    }
   }
   var pending = false;
   function schedule() {
