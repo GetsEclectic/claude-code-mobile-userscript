@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.30.0
+// @version      1.31.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -424,6 +424,19 @@ GM_addStyle(`
     min-height: 0 !important;
     min-width: 0 !important;
   }
+
+  /* 21. Hide the sidebar drawer's Routines / Customize / More rows. They sit
+     above the recents list and eat a lot of vertical room — with the soft
+     keyboard up the drawer's viewport is short enough that only two rows fit,
+     pushing recents (the only thing Ben uses the drawer for) off-screen. Ben
+     doesn't use these three rows. More has a stable aria-label so a CSS rule
+     handles it; Routines and Customize are text-only buttons with no stable
+     attribute (same class soup as every other row), so the companion below
+     marks them with [data-ccm-hide-row] and this rule hides anything marked. */
+  aside[aria-label="Sidebar"] button[aria-label="More navigation items"],
+  aside[aria-label="Sidebar"] button[data-ccm-hide-row] {
+    display: none !important;
+  }
 }
 `);
 
@@ -675,4 +688,40 @@ GM_addStyle(`
     if (!document.documentElement.classList.contains('ccm-kb-open')) return;
     e.preventDefault(); // keep the composer focused where honored -> no resize at all
   }, true);
+})();
+
+/* Companion to rule 21. The Routines and Customize sidebar rows have no stable
+   attribute — same data-row-main-button buttons as every other row, no aria,
+   no testid, no href — so they can only be matched by their text content, and
+   CSS has no text-match selector. Walk the sidebar's row buttons and stamp
+   data-ccm-hide-row on any whose label is one of the targets; rule 21 then
+   hides them. React re-renders the sidebar on drawer open/close and route
+   changes, so a MutationObserver re-stamps after each. (More is handled by
+   aria-label in rule 21 directly; this only covers the text-only labels.)
+
+   Each row's textContent starts with a Private-Use-Area icon glyph (e.g.
+   "Routines"), and the New-session row appends "⇧⌘O" — so strict equality
+   on the raw textContent never matched. Strip everything but ASCII letters and
+   spaces before comparing, then exact-match against the target set (substring
+   matching would risk hiding an unrelated session titled "Customize my X"). */
+(function () {
+  var HIDE = { 'Routines': 1, 'Customize': 1 };
+  function stamp() {
+    var rows = document.querySelectorAll(
+      'aside[aria-label="Sidebar"] button[data-row-main-button]');
+    for (var i = 0; i < rows.length; i++) {
+      var label = (rows[i].textContent || '').replace(/[^A-Za-z ]+/g, '').trim();
+      if (HIDE[label]) rows[i].setAttribute('data-ccm-hide-row', '');
+    }
+  }
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; stamp(); });
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true,
+  });
+  stamp();
 })();
