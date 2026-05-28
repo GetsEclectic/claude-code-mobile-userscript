@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.35.0
+// @version      1.37.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -440,16 +440,25 @@ GM_addStyle(`
 }
 `);
 
-/* Debug overlay — v1.34.0. Off by default; activate by adding ?ccmDebug=1
-   to the URL once (persists via localStorage.ccmDebug='1' so refreshes hold;
-   clear with localStorage.removeItem('ccmDebug') in devtools or ?ccmDebug=0).
-   When on, exposes window.__ccmDbg.log(type, data) — the rule-11 companion,
-   drawer-state companion, and sidebar-tap handler call it; an on-page overlay
-   renders live state + bounding rects of the layout-critical elements + the
-   last 12 events. v1.34 also re-anchors the overlay each frame to
-   visualViewport.offsetLeft/Top, because position:fixed is unreliable on this
-   page (an ancestor transform/filter scopes it to that ancestor's box instead
-   of the viewport — Ben saw the overlay scroll off in the bug state). */
+/* Debug instrumentation — v1.37.0. Off by default; activate by adding
+   ?ccmDebug=1 to the URL once (persists via localStorage.ccmDebug='1';
+   clear with ?ccmDebug=0 or localStorage.removeItem('ccmDebug')).
+
+   No on-screen overlay. Mid-bug the overlay vanished (an ancestor
+   transform/filter scoped the position:fixed box, even after re-anchoring
+   to documentElement + vv offsets), so v1.36's "see the history inline"
+   never worked. v1.37 commits to "we cannot see anything on the screen
+   mid-bug" and routes diagnostics to two transports:
+
+   1. console.log('[CCM-DBG]', JSON.stringify({...})) — Firefox routes this
+      to Android logcat under tag GeckoConsole, pullable via:
+        bin/phone-adb logcat -d -s GeckoConsole | grep CCM-DBG
+   2. localStorage.ccmHist — same 20-entry ring as v1.36, accessible via
+      the devtools console or `localStorage.getItem('ccmHist')` from any
+      tab that loaded the userscript.
+
+   Exposes window.__ccmDbg.log(type, data) — same API as v1.36; the rule-11
+   companion, drawer-state companion, and sidebar-tap handler call it. */
 (function () {
   try {
     var qs = new URLSearchParams(location.search);
@@ -458,134 +467,72 @@ GM_addStyle(`
     if (localStorage.getItem('ccmDebug') !== '1') return;
   } catch (e) { return; }
   var ring = []; var MAX = 12;
+  function emit(type, data) {
+    // Tag every line so it's grep-friendly in logcat.
+    try { console.log('[CCM-DBG]', JSON.stringify({ t: Date.now(), type: type, data: data || null })); }
+    catch (e) { /* JSON cycle or console missing */ }
+  }
   window.__ccmDbg = {
     log: function (type, data) {
       ring.push({ t: Date.now(), type: type, data: data || null });
       if (ring.length > MAX) ring.shift();
+      emit(type, data);
     },
     events: ring,
   };
-  function mkOverlay() {
-    if (document.getElementById('ccm-dbg-overlay')) return;
-    var el = document.createElement('div');
-    el.id = 'ccm-dbg-overlay';
-    // Top-RIGHT: must not cover the "Open sidebar" button (top-left) — that's
-    // the very tap the repro needs. pointer-events:none keeps the model
-    // selector (also top-right) clickable through the overlay.
-    el.style.cssText = [
-      'position:fixed','top:0','right:0','z-index:2147483647',
-      'background:rgba(0,0,0,0.78)','color:#0f0','font:10px/1.2 monospace',
-      'padding:3px 5px','max-width:62vw','pointer-events:none',
-      'white-space:pre','border:1px solid #0f0','border-radius:0 0 0 4px',
-    ].join(';');
-    // v1.35: append to documentElement (html), NOT body. position:fixed is
-    // being captured by an ancestor transform on <body>, scoping the overlay
-    // to body's box instead of the viewport — Ben saw it scroll off in the
-    // bug state even with vv.offsetLeft/Top anchoring. html has no transform
-    // and is the layout root, so fixed inside it is true to the viewport.
-    document.documentElement.appendChild(el);
+  var HIST_KEY = 'ccmHist';
+  var HIST_MAX = 20;
+  function pushHist(snap) {
+    try {
+      var hist = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+      hist.push(snap);
+      if (hist.length > HIST_MAX) hist = hist.slice(-HIST_MAX);
+      localStorage.setItem(HIST_KEY, JSON.stringify(hist));
+    } catch (e) { /* localStorage full or blocked */ }
   }
-  // Bug heuristic: composer at top of an otherwise-empty viewport. Save a
-  // snapshot to localStorage + memory the FIRST time we cross into the bug
-  // state, so even if the overlay vanishes mid-bug we keep the rect data.
-  // The overlay renders the last snapshot inline once it's visible again.
-  var lastBugSnap = null;
-  var wasBuggy = false;
-  try { lastBugSnap = JSON.parse(localStorage.getItem('ccmBugSnap') || 'null'); }
-  catch (e) { lastBugSnap = null; }
-  function snapshot(promptY, lines) {
-    var snap = {
-      t: Date.now(),
-      promptY: promptY,
-      lines: lines.slice(),
-      events: ring.slice(),
-    };
-    lastBugSnap = snap;
-    try { localStorage.setItem('ccmBugSnap', JSON.stringify(snap)); }
-    catch (e) { /* localStorage full or blocked */ }
-  }
+  var lastSaveT = 0;
   function rect(sel) {
     var n = document.querySelector(sel);
-    if (!n) return sel.replace(/^\./, '') + ':-';
+    if (!n) return null;
     var r = n.getBoundingClientRect();
-    // y/h to the nearest int — that's the diagnostic resolution we need
-    return sel.replace(/^\./, '') + ':y' + Math.round(r.top) +
-      ' h' + Math.round(r.height);
+    return { y: Math.round(r.top), h: Math.round(r.height) };
   }
-  function promptTop() {
-    var n = document.querySelector('.epitaxy-prompt');
-    return n ? Math.round(n.getBoundingClientRect().top) : -1;
-  }
-  function render() {
-    mkOverlay();
-    var el = document.getElementById('ccm-dbg-overlay');
-    if (!el) return;
+  function snapshot() {
     var vv = window.visualViewport;
     var de = document.documentElement;
-    var vvh = getComputedStyle(de).getPropertyValue('--ccm-vvh').trim() || '-';
+    var vvh = getComputedStyle(de).getPropertyValue('--ccm-vvh').trim() || '';
     var guard = Math.max(0, (window.__ccmSidebarTapUntil || 0) - Date.now());
-    // Re-anchor: position:fixed is being captured by an ancestor's
-    // transform/filter (the overlay drifts off-screen in the bug state). Use
-    // visualViewport offsets each frame so the overlay tracks the visible area.
-    if (vv) {
-      var w = el.getBoundingClientRect().width || 200;
-      el.style.left = (vv.offsetLeft + vv.width - w) + 'px';
-      el.style.right = 'auto';
-      el.style.top = vv.offsetTop + 'px';
-    }
-    var lines = [
-      'v1.35.0 dbg',
-      'vv:' + (vv ? Math.round(vv.height) : '-') +
-        ' in:' + window.innerHeight +
-        ' vvh:' + vvh +
-        ' max:' + (window.__ccmMaxH != null ? window.__ccmMaxH : '-'),
-      'kb:' + (de.classList.contains('ccm-kb-open') ? 1 : 0) +
-        ' dr:' + (de.classList.contains('ccm-drawer-open') ? 1 : 0) +
-        ' guard:' + guard + 'ms',
-      // Bounding rects of the layout-critical elements. In the bug state one
-      // of these (almost certainly .epitaxy-root or the chat-scroll container)
-      // will have an h or y that doesn't agree with vvh — that's the breakage.
-      rect('body'),
-      rect('.epitaxy-root'),
-      rect('.epitaxy-chat-size'),
-      rect('.epitaxy-markdown'),
-      rect('.epitaxy-prompt'),
-    ];
-    for (var i = 0; i < ring.length; i++) {
-      var e = ring[i];
-      var ts = new Date(e.t).toISOString().slice(14, 23); // mm:ss.sss
-      var d = '';
-      if (e.data) {
-        var parts = [];
-        for (var k in e.data) parts.push(k + '=' + e.data[k]);
-        d = ' ' + parts.join(' ');
-      }
-      lines.push('[' + ts + '] ' + e.type + d);
-    }
-    // Bug detection: composer is at the top of an otherwise-tall viewport.
-    // Threshold 300 CSS px is comfortably below normal composer top (~766 in
-    // a 854-tall viewport) but well above the y~100 we see in bug screenshots.
-    var pY = promptTop();
-    var vh = vv ? Math.round(vv.height) : 0;
-    var buggy = pY >= 0 && pY < 300 && vh > 600;
-    if (buggy && !wasBuggy) snapshot(pY, lines);
-    wasBuggy = buggy;
-    if (lastBugSnap) {
-      var snapTs = new Date(lastBugSnap.t).toISOString().slice(11, 19);
-      lines.push('--- LAST BUG SNAP @ ' + snapTs + ' (promptY=' +
-        lastBugSnap.promptY + ') ---');
-      for (var j = 0; j < lastBugSnap.lines.length; j++) {
-        lines.push('| ' + lastBugSnap.lines[j]);
-      }
-    }
-    el.textContent = lines.join('\n');
+    return {
+      t: Date.now(),
+      vv: vv ? Math.round(vv.height) : null,
+      vvOff: vv ? { x: Math.round(vv.offsetLeft), y: Math.round(vv.offsetTop) } : null,
+      inH: window.innerHeight,
+      vvh: vvh,
+      max: window.__ccmMaxH != null ? window.__ccmMaxH : null,
+      kb: de.classList.contains('ccm-kb-open') ? 1 : 0,
+      dr: de.classList.contains('ccm-drawer-open') ? 1 : 0,
+      guard: guard,
+      body: rect('body'),
+      root: rect('.epitaxy-root'),
+      chatSize: rect('.epitaxy-chat-size'),
+      markdown: rect('.epitaxy-markdown'),
+      prompt: rect('.epitaxy-prompt'),
+    };
   }
-  setInterval(render, 200);
+  function tick() {
+    if (Date.now() - lastSaveT < 1000) return;
+    lastSaveT = Date.now();
+    var snap = snapshot();
+    pushHist(snap);
+    emit('state', snap);
+  }
+  setInterval(tick, 1000);
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', render);
+    document.addEventListener('DOMContentLoaded', tick);
   } else {
-    render();
+    tick();
   }
+  emit('ccm.init', { ver: '1.37.0' });
 })();
 
 /* Companion to rule 11. Two jobs, both driven off the visualViewport API (the
