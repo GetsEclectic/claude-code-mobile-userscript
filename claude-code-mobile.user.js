@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.37.0
+// @version      1.38.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -440,25 +440,26 @@ GM_addStyle(`
 }
 `);
 
-/* Debug instrumentation — v1.37.0. Off by default; activate by adding
+/* Debug instrumentation — v1.38.0. Off by default; activate by adding
    ?ccmDebug=1 to the URL once (persists via localStorage.ccmDebug='1';
    clear with ?ccmDebug=0 or localStorage.removeItem('ccmDebug')).
 
    No on-screen overlay. Mid-bug the overlay vanished (an ancestor
    transform/filter scoped the position:fixed box, even after re-anchoring
-   to documentElement + vv offsets), so v1.36's "see the history inline"
-   never worked. v1.37 commits to "we cannot see anything on the screen
-   mid-bug" and routes diagnostics to two transports:
+   to documentElement + vv offsets), so v1.37 dropped it. v1.38 adds a
+   single floating "DUMP" button that on tap downloads localStorage.ccmHist
+   as a JSON blob — release Firefox on Android doesn't route console.log
+   to logcat, so console emission was a dead transport; a downloaded file
+   is the working path. After repro, tap DUMP, then pull from the phone:
+     bin/phone-adb pull /sdcard/Download/ccm-hist-<ts>.json
 
-   1. console.log('[CCM-DBG]', JSON.stringify({...})) — Firefox routes this
-      to Android logcat under tag GeckoConsole, pullable via:
-        bin/phone-adb logcat -d -s GeckoConsole | grep CCM-DBG
-   2. localStorage.ccmHist — same 20-entry ring as v1.36, accessible via
-      the devtools console or `localStorage.getItem('ccmHist')` from any
-      tab that loaded the userscript.
+   Two transports:
+   1. localStorage.ccmHist — 20-entry ring of state snapshots (1Hz).
+   2. Tap-to-download blob (the DUMP button).
 
-   Exposes window.__ccmDbg.log(type, data) — same API as v1.36; the rule-11
-   companion, drawer-state companion, and sidebar-tap handler call it. */
+   Exposes window.__ccmDbg.log(type, data) — the rule-11 companion,
+   drawer-state companion, and sidebar-tap handler call it; events are
+   appended to the snapshot ring so they survive into the dump. */
 (function () {
   try {
     var qs = new URLSearchParams(location.search);
@@ -466,22 +467,16 @@ GM_addStyle(`
     if (qs.get('ccmDebug') === '0') localStorage.removeItem('ccmDebug');
     if (localStorage.getItem('ccmDebug') !== '1') return;
   } catch (e) { return; }
-  var ring = []; var MAX = 12;
-  function emit(type, data) {
-    // Tag every line so it's grep-friendly in logcat.
-    try { console.log('[CCM-DBG]', JSON.stringify({ t: Date.now(), type: type, data: data || null })); }
-    catch (e) { /* JSON cycle or console missing */ }
-  }
+  var ring = []; var MAX = 40;
   window.__ccmDbg = {
     log: function (type, data) {
       ring.push({ t: Date.now(), type: type, data: data || null });
       if (ring.length > MAX) ring.shift();
-      emit(type, data);
     },
     events: ring,
   };
   var HIST_KEY = 'ccmHist';
-  var HIST_MAX = 20;
+  var HIST_MAX = 30;
   function pushHist(snap) {
     try {
       var hist = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
@@ -502,6 +497,9 @@ GM_addStyle(`
     var de = document.documentElement;
     var vvh = getComputedStyle(de).getPropertyValue('--ccm-vvh').trim() || '';
     var guard = Math.max(0, (window.__ccmSidebarTapUntil || 0) - Date.now());
+    // Drain the event ring into the snapshot so each saved entry carries
+    // both layout state and the events that fired in the preceding tick.
+    var events = ring.splice(0, ring.length);
     return {
       t: Date.now(),
       vv: vv ? Math.round(vv.height) : null,
@@ -517,22 +515,72 @@ GM_addStyle(`
       chatSize: rect('.epitaxy-chat-size'),
       markdown: rect('.epitaxy-markdown'),
       prompt: rect('.epitaxy-prompt'),
+      events: events,
     };
   }
   function tick() {
     if (Date.now() - lastSaveT < 1000) return;
     lastSaveT = Date.now();
-    var snap = snapshot();
-    pushHist(snap);
-    emit('state', snap);
+    pushHist(snapshot());
+  }
+  function dump() {
+    var payload = {
+      ver: '1.38.0',
+      dumpedAt: new Date().toISOString(),
+      ua: navigator.userAgent,
+      hist: JSON.parse(localStorage.getItem(HIST_KEY) || '[]'),
+    };
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var ts = new Date().toISOString().replace(/[:.]/g, '-');
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'ccm-hist-' + ts + '.json';
+    document.documentElement.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      a.remove();
+      URL.revokeObjectURL(url);
+    }, 1000);
+  }
+  window.__ccmDump = dump;
+  function mkDumpBtn() {
+    if (document.getElementById('ccm-dump-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'ccm-dump-btn';
+    btn.textContent = 'DUMP';
+    // Bottom-left, far from the composer (bottom-right) and the menu
+    // (top-left). 56px target — Material minimum tap-size — so it's
+    // findable even if it lands inside a captured-fixed box.
+    btn.style.cssText = [
+      'position:fixed','left:8px','bottom:8px','z-index:2147483647',
+      'width:56px','height:56px','border-radius:50%',
+      'background:#0a0','color:#fff','border:2px solid #fff',
+      'font:bold 11px/1 monospace','box-shadow:0 2px 8px rgba(0,0,0,0.5)',
+      'opacity:0.85','padding:0',
+    ].join(';');
+    btn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      dump();
+      // Flash to confirm tap registered.
+      btn.style.background = '#ff0';
+      btn.style.color = '#000';
+      setTimeout(function () {
+        btn.style.background = '#0a0';
+        btn.style.color = '#fff';
+      }, 250);
+    }, true);
+    document.documentElement.appendChild(btn);
   }
   setInterval(tick, 1000);
+  setInterval(mkDumpBtn, 500); // re-attach if the SPA blows it away
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', tick);
+    document.addEventListener('DOMContentLoaded', function () { tick(); mkDumpBtn(); });
   } else {
     tick();
+    mkDumpBtn();
   }
-  emit('ccm.init', { ver: '1.37.0' });
 })();
 
 /* Companion to rule 11. Two jobs, both driven off the visualViewport API (the
