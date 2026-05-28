@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.43.0
+// @version      1.44.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -649,7 +649,7 @@ GM_addStyle(`
   }
   function dump() {
     var payload = {
-      ver: '1.43.0',
+      ver: '1.44.0',
       dumpedAt: new Date().toISOString(),
       ua: navigator.userAgent,
       hist: JSON.parse(localStorage.getItem(HIST_KEY) || '[]'),
@@ -799,6 +799,24 @@ GM_addStyle(`
       vv: Math.round(vv.height), max: maxH, kb: kbOpen ? 1 : 0,
       off: Math.round(vv.offsetTop),
     });
+    // v1.44: unwind the visual-viewport pan. When vv.offsetTop > 0 the
+    // browser has scrolled the visual viewport down within the layout
+    // viewport (typically keyboard-avoidance keeping the focused composer
+    // visible). Rule 11 grew body to fill the panned layout, but the body's
+    // grid layout then places the composer at varying positions inside the
+    // 918-px container — leaving 180–700px of empty dark body depending on
+    // content. Scrolling the document by vv.offsetTop pulls layout content
+    // up so that the focused element is in view via document scroll instead
+    // of visual-viewport pan; the browser then lets vv.offsetTop relax to 0.
+    // Guarded so it only fires once per offset change, to avoid a loop with
+    // any browser re-pan attempt; the next sync re-evaluates.
+    if (vv.offsetTop > 0 && kbOpen) {
+      var nextY = Math.round(window.scrollY + vv.offsetTop);
+      if (window.__ccmDbg) window.__ccmDbg.log('r11.unpan', {
+        off: Math.round(vv.offsetTop), sY: Math.round(window.scrollY), to: nextY,
+      });
+      window.scrollTo(window.scrollX, nextY);
+    }
     var delta = prevH - vv.height; // > 0 when the keyboard opens (height shrinks)
     prevH = vv.height;
     // Only hold the transcript bottom across an actual keyboard transition.
