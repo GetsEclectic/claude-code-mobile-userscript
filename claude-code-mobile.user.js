@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.44.0
+// @version      1.45.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -440,6 +440,23 @@ GM_addStyle(`
 }
 `);
 
+/* v1.45 bisect toggles. Each defaults ON ('1'); flip OFF from the phone by
+   localStorage.setItem('ccmRule11','0') (etc), then reload. Read once at script
+   start so the user can toggle without page reload only by reloading. Reported
+   in ccmHist snapshots as `flags` so a dump tells us which path was live. */
+window.__ccmFlags = (function () {
+  function f(k, dflt) {
+    try { var v = localStorage.getItem(k); return v === null ? dflt : v !== '0'; }
+    catch (e) { return dflt; }
+  }
+  return {
+    rule11: f('ccmRule11', true),       // gates ccm-kb-open class toggle (height pin)
+    scrollHold: f('ccmScrollHold', true), // gates s.scrollTop += delta
+    unpan: f('ccmUnpan', true),         // gates window.scrollTo(_, sY + offsetTop)
+    drawerSync: f('ccmDrawerSync', true), // gates ccm-drawer-open class toggle
+  };
+})();
+
 /* Debug instrumentation — v1.38.0. Off by default; activate by adding
    ?ccmDebug=1 to the URL once (persists via localStorage.ccmDebug='1';
    clear with ?ccmDebug=0 or localStorage.removeItem('ccmDebug')).
@@ -618,6 +635,8 @@ GM_addStyle(`
       kb: de.classList.contains('ccm-kb-open') ? 1 : 0,
       dr: de.classList.contains('ccm-drawer-open') ? 1 : 0,
       guard: guard,
+      // v1.45 — which bisect toggles were live for this snapshot.
+      flags: window.__ccmFlags || null,
       // Full computed-style probes — the bug is in something we weren't
       // measuring before, so dump position/top/bottom/transform/zIndex.
       body: rectFull('body'),
@@ -786,7 +805,9 @@ GM_addStyle(`
     maxH = Math.max(maxH, fullHeight());
     window.__ccmMaxH = maxH;
     var kbOpen = (maxH - vv.height) > 150;
-    de.classList.toggle('ccm-kb-open', kbOpen);
+    // v1.45 bisect toggle: ccmRule11=0 disables the height pin entirely by
+    // never adding ccm-kb-open (the sole switch arming rule 11's CSS).
+    de.classList.toggle('ccm-kb-open', kbOpen && window.__ccmFlags.rule11);
     // Body height = bottom edge of the visual viewport in layout coords. When
     // vv is anchored at the top of the layout viewport (offsetTop=0, the
     // normal case), this is just vv.height — same as before. But the C
@@ -810,7 +831,7 @@ GM_addStyle(`
     // of visual-viewport pan; the browser then lets vv.offsetTop relax to 0.
     // Guarded so it only fires once per offset change, to avoid a loop with
     // any browser re-pan attempt; the next sync re-evaluates.
-    if (vv.offsetTop > 0 && kbOpen) {
+    if (vv.offsetTop > 0 && kbOpen && window.__ccmFlags.unpan) {
       var nextY = Math.round(window.scrollY + vv.offsetTop);
       if (window.__ccmDbg) window.__ccmDbg.log('r11.unpan', {
         off: Math.round(vv.offsetTop), sY: Math.round(window.scrollY), to: nextY,
@@ -822,7 +843,7 @@ GM_addStyle(`
     // Only hold the transcript bottom across an actual keyboard transition.
     // Gating on the delta size alone misfired on UA-chrome show/hide (~60-90px),
     // which clamped near the bottom and drifted the transcript one way each cycle.
-    if (kbOpen || wasOpen) {
+    if ((kbOpen || wasOpen) && window.__ccmFlags.scrollHold) {
       var s = findScroller();
       if (s) s.scrollTop += delta;
     }
@@ -856,7 +877,8 @@ GM_addStyle(`
   function sync() {
     var wasOpen = de.classList.contains('ccm-drawer-open');
     var open = !!document.querySelector('[aria-label="Open sidebar"][aria-expanded="true"]');
-    de.classList.toggle('ccm-drawer-open', open);
+    // v1.45 bisect toggle: ccmDrawerSync=0 leaves the class off forever.
+    de.classList.toggle('ccm-drawer-open', open && window.__ccmFlags.drawerSync);
     if (window.__ccmDbg && wasOpen !== open) window.__ccmDbg.log('drawer', {
       from: wasOpen ? 1 : 0, to: open ? 1 : 0,
     });
