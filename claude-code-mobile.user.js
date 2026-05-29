@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.46.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
+// @version      1.47.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -1093,4 +1093,28 @@ window.__ccmFlags = (function () {
     childList: true, subtree: true,
   });
   stamp();
+})();
+
+/* Disable the app's custom right-click / long-press context menu so the native
+   browser menu (Copy / Select / Paste / Look up / Inspect) appears instead.
+
+   The app attaches its own 'contextmenu' handler and calls preventDefault to
+   suppress the native menu and render a custom one in its place. We can't remove
+   the app's listener, but we can stop the event from ever reaching it: a
+   capture-phase listener on window fires before any listener the app adds
+   (capture order is window -> document -> ... -> target, and we register at
+   document-start, before the app mounts). stopImmediatePropagation halts the
+   chain there, so the app never preventDefault's and the platform shows its
+   native menu.
+
+   Deliberately does NOT call preventDefault — that would suppress the native
+   menu too, leaving NO menu (the opposite of what's wanted). We only block the
+   app's interception; the browser's default contextmenu behaviour is untouched.
+
+   Unscoped to width: the custom menu is annoying on desktop right-click as well
+   as phone long-press, and "show the native menu" is correct on both. */
+(function () {
+  window.addEventListener('contextmenu', function (e) {
+    e.stopImmediatePropagation();
+  }, true);
 })();
