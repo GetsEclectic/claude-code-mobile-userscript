@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.47.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Disables the app's custom right-click/long-press menu so the native browser menu shows.
+// @version      1.48.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -237,6 +237,32 @@ window.__ccmStyleEl = GM_addStyle(`
   html.ccm-kb-open:not(.ccm-drawer-open) .tiles-shell > .h-full > .flex-col {
     height: calc(var(--ccm-vvh, 100dvh) - 18px) !important;
     min-height: 0 !important;
+  }
+
+  /* 11b. Companion to rule 11 for the kb-open+drawer-open window. Rule 11
+     suspends on .ccm-drawer-open so the Recents list can render at full
+     height. But on Firefox Android the keyboard rise during drawer-open
+     produces a visual-viewport pan (vv.offsetTop jumps to ~334 to keep the
+     focused composer visible) because layout is unconstrained at 854px while
+     vv.height shrank to 520. The v1.44 window.scrollTo unpan is a no-op here:
+     deScrollHeight==deClientHeight, so the document has no scroll range to
+     consume the offset. Without intervention the pan can't be unwound and
+     the panned state persists after the drawer closes — that's the C
+     black-gap. Fix: pin html + body to vv.height (only, no +offsetTop) during
+     the drawer-open+kb-up window so layout matches the visible area and
+     Firefox has no reason to pan. Deliberately skip .epitaxy-root and the
+     inner .tiles-shell clamps from rule 11 — bisected empirically over RDP
+     against the live Firefox tab: every variant that clamped .epitaxy-root
+     broke the drawer's session-list first-open render (likely a virtualized
+     scroller keying its visible window off .epitaxy-root geometry); html +
+     body alone prevents the pan without disturbing the list. Uses a separate
+     CSS variable --ccm-vvh-drawer = vv.height (no offsetTop addition) — see
+     the sync() body for where it's set. */
+  html.ccm-kb-open.ccm-drawer-open,
+  html.ccm-kb-open.ccm-drawer-open body.min-h-screen {
+    height: var(--ccm-vvh-drawer, 100dvh) !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
   }
 
   /* 12. In-session title bar reads "[repo] / [session title]". The repo is
@@ -827,6 +853,11 @@ window.__ccmFlags = (function () {
     // session nav); body sized to vv.height alone ends 334px short of the
     // visible bottom, and that gap renders black. Adding offsetTop closes it.
     de.style.setProperty('--ccm-vvh', (vv.height + vv.offsetTop) + 'px');
+    // Companion to rule 11b. Always set to vv.height alone (no offsetTop
+    // addition): the drawer-open pin needs layout == visible area so Firefox
+    // doesn't pan; --ccm-vvh's vv.height+offsetTop formula serves rule 11's
+    // closed-drawer case and is the wrong target here.
+    de.style.setProperty('--ccm-vvh-drawer', vv.height + 'px');
     if (window.__ccmDbg) window.__ccmDbg.log('r11.sync', {
       vv: Math.round(vv.height), max: maxH, kb: kbOpen ? 1 : 0,
       off: Math.round(vv.offsetTop),
@@ -1093,28 +1124,4 @@ window.__ccmFlags = (function () {
     childList: true, subtree: true,
   });
   stamp();
-})();
-
-/* Disable the app's custom right-click / long-press context menu so the native
-   browser menu (Copy / Select / Paste / Look up / Inspect) appears instead.
-
-   The app attaches its own 'contextmenu' handler and calls preventDefault to
-   suppress the native menu and render a custom one in its place. We can't remove
-   the app's listener, but we can stop the event from ever reaching it: a
-   capture-phase listener on window fires before any listener the app adds
-   (capture order is window -> document -> ... -> target, and we register at
-   document-start, before the app mounts). stopImmediatePropagation halts the
-   chain there, so the app never preventDefault's and the platform shows its
-   native menu.
-
-   Deliberately does NOT call preventDefault — that would suppress the native
-   menu too, leaving NO menu (the opposite of what's wanted). We only block the
-   app's interception; the browser's default contextmenu behaviour is untouched.
-
-   Unscoped to width: the custom menu is annoying on desktop right-click as well
-   as phone long-press, and "show the native menu" is correct on both. */
-(function () {
-  window.addEventListener('contextmenu', function (e) {
-    e.stopImmediatePropagation();
-  }, true);
 })();
