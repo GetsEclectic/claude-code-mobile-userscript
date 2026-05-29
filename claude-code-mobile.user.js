@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.45.0
+// @version      1.46.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -20,7 +20,7 @@
    comment: one stray occurrence inside a comment silently truncates the whole
    sheet to zero parsed rules. */
 
-GM_addStyle(`
+window.__ccmStyleEl = GM_addStyle(`
 @media (max-width: 900px) {
 
   /* 1. Lift control & label text off the 12-13px default. */
@@ -439,6 +439,17 @@ GM_addStyle(`
   }
 }
 `);
+/* v1.46 bisect: ccmCss=0 removes the entire stylesheet (keeps companion JS),
+   so a phone test can split a CSS-caused gap from a JS-caused one. GM_addStyle
+   returns the injected <style>; remove it if the flag is set. Guarded so it's a
+   no-op in the dump harness (which injects CSS separately and never runs this
+   line's GM_addStyle, leaving window.__ccmStyleEl undefined). */
+try {
+  if (localStorage.getItem('ccmCss') === '0' &&
+      window.__ccmStyleEl && window.__ccmStyleEl.remove) {
+    window.__ccmStyleEl.remove();
+  }
+} catch (e) { /* localStorage can throw in some sandboxes */ }
 
 /* v1.45 bisect toggles. Each defaults ON ('1'); flip OFF from the phone by
    localStorage.setItem('ccmRule11','0') (etc), then reload. Read once at script
