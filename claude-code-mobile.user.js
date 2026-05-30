@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.51.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Disables the app's custom right-click/long-press menu so the native browser menu shows.
+// @version      1.52.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -491,6 +491,7 @@ window.__ccmFlags = (function () {
     scrollHold: f('ccmScrollHold', true), // gates s.scrollTop += delta
     unpan: f('ccmUnpan', true),         // gates window.scrollTo(_, sY + offsetTop)
     drawerSync: f('ccmDrawerSync', true), // gates ccm-drawer-open class toggle
+    noKbOnSwitch: f('ccmNoKbOnSwitch', true), // gates keyboard-down-on-session-switch
   };
 })();
 
@@ -1175,6 +1176,82 @@ window.__ccmFlags = (function () {
       e.preventDefault();
       e.stopImmediatePropagation();
     }
+  }, true);
+})();
+
+/* Keep the soft keyboard DOWN when switching into a session.
+
+   Opening a session (a card on the home session-list, a Recents row in the
+   drawer, or any route change into a session view) auto-focuses the composer
+   textarea on mount, which pops the soft keyboard and eats the top half of the
+   screen exactly when you want to READ the session history. The ask: land in a
+   session with the keyboard down and the transcript fully visible; the composer
+   raises the keyboard only when you tap it yourself.
+
+   We can't stop React from calling .focus() on the textarea, so we blur it back
+   the first time it's programmatically focused after a navigation — but ONLY
+   when the focus was programmatic. A genuine composer tap (a pointerdown that
+   lands on the textarea) is recorded and left alone, so deliberately tapping the
+   input still raises the keyboard. Implementation:
+
+     1. Patch history.pushState/replaceState + listen for popstate to catch every
+        client-side route change (this script is @run-at document-start, so the
+        patch is in place before the app binds its router), and arm a ONE-SHOT
+        suppression on each.
+     2. On the first composer focusin while armed, blur it and disarm. One-shot
+        (not a time window) so re-render focus churn during later typing is never
+        touched — only the single autofocus that rides the navigation.
+     3. Honor a composer pointerdown in the last 700ms so a real tap that races
+        the navigation still wins.
+
+   Verified empirically (scripts/claude_web_dom_dump.py --companion-early, blur →
+   arm → focus): programmatic refocus is blurred back, while a focus preceded by
+   a composer pointerdown, and any focus with no preceding navigation, are both
+   honored.
+
+   Gated on the noKbOnSwitch flag (localStorage ccmNoKbOnSwitch=0 to disable for
+   a bisect). */
+(function () {
+  if (!window.__ccmFlags.noKbOnSwitch) return;
+  var COMPOSER = 'textarea, [contenteditable="true"]';
+  var armed = false;
+  var disarmAt = 0;        // hard cap so a route change with no composer never sticks
+  var lastComposerTap = 0;
+
+  // Remember genuine taps on the composer so we never fight the user's own focus.
+  document.addEventListener('pointerdown', function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest(COMPOSER)) lastComposerTap = Date.now();
+  }, true);
+
+  function arm() {
+    armed = true;
+    disarmAt = Date.now() + 2500; // expire if no composer ever mounts (e.g. session list)
+    if (window.__ccmDbg) window.__ccmDbg.log('nokb.arm', null);
+  }
+
+  ['pushState', 'replaceState'].forEach(function (m) {
+    var orig = history[m];
+    if (typeof orig !== 'function') return;
+    history[m] = function () {
+      var r = orig.apply(this, arguments);
+      try { arm(); } catch (e) { /* never let our hook break navigation */ }
+      return r;
+    };
+  });
+  window.addEventListener('popstate', arm);
+  arm(); // also cover a direct deep-link load that lands straight in a session
+
+  document.addEventListener('focusin', function (e) {
+    if (!armed) return;
+    if (Date.now() > disarmAt) { armed = false; return; }
+    var t = e.target;
+    if (!t || !t.closest || !t.closest(COMPOSER)) return;
+    armed = false; // one-shot: only the autofocus that rides this navigation
+    // A real tap into the composer just now -> honor it, leave the keyboard up.
+    if (Date.now() - lastComposerTap < 700) return;
+    if (window.__ccmDbg) window.__ccmDbg.log('nokb.blur', null);
+    try { t.blur(); } catch (e2) { /* swallow */ }
   }, true);
 })();
 
