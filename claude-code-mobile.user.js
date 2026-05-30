@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.66.0
+// @version      1.67.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1437,13 +1437,24 @@ window.__ccmFlags = (function () {
    lives behind GET https://claude.ai/v1/sessions, which returns every session
    with a session_status. We fetch that and count client-side.
 
-   What counts as "idle": the API status enum is
-   idle / running / requires_action / archived / deleted / pending. A session is
-   idle (waiting on Ben) when it is NOT actively working (running), NOT a
-   provisioning placeholder (pending), and NOT put away (archived / deleted).
-   So: count everything whose status is not in {running, pending, archived,
-   deleted}. That yields idle + requires_action (+ any future "waiting" status
-   the app adds), matching the human "sitting idle, waiting for me" reading.
+   What counts as "idle": session_status ALONE is unreliable — it gets stuck at
+   "running" after a turn finishes. Measured 2026-05-30: sessions whose turn had
+   clearly ended (Solver shadow / Session transcript / AdMob verdict) still
+   reported session_status:"running" while carrying a populated post_turn_summary
+   with status_category "review_ready". So the app's own per-session dot (and our
+   badge, when it trusted session_status) mislabelled finished sessions as active.
+
+   The accurate signal is post_turn_summary. The API populates it the moment a
+   turn ENDS and clears it (null) when a new turn starts. So:
+     - post_turn_summary present  => last turn ended => WAITING ON BEN (idle),
+       regardless of a stale session_status:"running". Covers review_ready
+       (output ready), need_input / requires_action (asked a question), and
+       failed (errored out) — all "ball is in Ben's court".
+     - no post_turn_summary + session_status:"running" => GENUINELY WORKING.
+   We still drop archived / deleted / pending. Falling back to session_status
+   in {idle, requires_action} covers any session the API hands back without a
+   post_turn_summary field. This matches the human "sitting idle, waiting for
+   me" reading far better than the raw status enum did.
 
    Headers: the endpoint 400s without anthropic-version and 404s without the
    org uuid. The org uuid is harvested from a URL the app has already fetched
@@ -1464,10 +1475,53 @@ window.__ccmFlags = (function () {
    matching the rest of the sheet: off-phone we remove the chip and bail. */
 (function () {
   var MQ = '(max-width: 900px)';
-  var KEY = 'ccmIdleCount';
   var POLL_MS = 45000;
-  // Statuses that are NOT idle: actively working, provisioning, or put away.
-  var NOT_IDLE = { running: 1, pending: 1, archived: 1, deleted: 1 };
+  var KEY = 'ccmIdleCount';
+  var MKEY = 'ccmSessionStates';   // name -> 'ready' | 'awaiting' (override targets)
+  // Put-away / placeholder statuses never count, regardless of turn state.
+  var DROP = { pending: 1, archived: 1, deleted: 1 };
+
+  // Classify a session by what it actually wants from Ben, keyed off
+  // post_turn_summary rather than the stale session_status (see block comment):
+  //   'working'  — turn in progress (running, no post_turn_summary). Leave alone.
+  //   'awaiting'  — asked Ben something (requires_action / needs_action set).
+  //   'ready'    — turn ended, output waiting (review_ready / failed / idle).
+  //   null       — archived / deleted / pending / unknown. Ignore.
+  // 'working' is the ONLY state the app's "Running" dot is right about; 'ready'
+  // and 'awaiting' are the cases it stamps "Running" on by mistake.
+  function sessionState(s) {
+    if (!s) return null;
+    var st = s.session_status;
+    if (DROP[st]) return null;
+    var pts = s.post_turn_summary ||
+              (s.external_metadata && s.external_metadata.post_turn_summary);
+    var needs = (pts && pts.needs_action) || '';
+    if (st === 'requires_action' || needs) return 'awaiting';
+    if (pts) return 'ready';            // turn ended, nothing explicit needed
+    if (st === 'idle') return 'ready';  // idle without a summary → still done
+    return 'working';                   // running + no summary → genuinely busy
+  }
+
+  // A session is "waiting on Ben" (counts toward the idle badge) when its turn
+  // has ended — i.e. it is ready or awaiting, not working.
+  function isWaiting(s) {
+    var st = sessionState(s);
+    return st === 'ready' || st === 'awaiting';
+  }
+
+  // Given the app's per-session status <span role="status">, climb to the row
+  // and read the session name off its "More options for <name>" button. The
+  // first ancestor that owns such a button is the row itself (the status span
+  // and the button are siblings within it), so this never crosses into a
+  // neighbouring row.
+  function rowName(statusEl) {
+    var n = statusEl;
+    for (var d = 0; d < 6 && n; d++, n = n.parentElement) {
+      var btn = n.querySelector('[aria-label^="More options for "]');
+      if (btn) return btn.getAttribute('aria-label').slice(17); // len('More options for ')
+    }
+    return null;
+  }
 
   function cached() {
     var v;
@@ -1520,6 +1574,42 @@ window.__ccmFlags = (function () {
     }
   }
 
+  function statesCached() {
+    try { return JSON.parse(localStorage.getItem(MKEY)) || {}; }
+    catch (e) { return {}; }
+  }
+
+  // Correct the app's per-session status dots in the recents list. The app
+  // renders an animated triple-dot "Running" indicator straight off the stale
+  // session_status, so a session whose turn has actually ended still shows
+  // "Running". For every such row whose true state (from the cached map) is
+  // ready/awaiting, swap in the app's OWN status-dot markup (data-kind picks up
+  // the app's colour) and fix the aria-label. We only ever downgrade a
+  // "Running" dot — genuinely-working rows (state 'working', not in the map)
+  // and rows the app already shows as Ready/Awaiting are left untouched.
+  //
+  // Idempotent: once swapped the span no longer holds a .dframe-dot, so it
+  // won't re-match. When the app re-renders the row back to "Running", the
+  // MutationObserver re-applies. (A session that resumes work shows a stale
+  // override for at most one POLL_MS until the next refresh drops it from the
+  // map — acceptable for a glance-level dot.)
+  function paintDots() {
+    if (!window.matchMedia(MQ).matches) return;   // phone sheet only
+    var map = statesCached();
+    var dots = document.querySelectorAll('span[role="status"]');
+    for (var i = 0; i < dots.length; i++) {
+      var el = dots[i];
+      if (!el.querySelector('.dframe-dot')) continue;  // not the "Running" dot
+      var name = rowName(el);
+      if (!name) continue;
+      var state = map[name];
+      if (state !== 'ready' && state !== 'awaiting') continue;
+      el.setAttribute('aria-label', state === 'awaiting' ? 'Awaiting input' : 'Ready');
+      el.innerHTML = '<span class="status-dot" data-kind="' +
+        (state === 'awaiting' ? 'awaiting' : 'ready') + '"></span>';
+    }
+  }
+
   // Fetch the session list and recompute the cached count. On any failure
   // (no org yet, network, non-200, bad JSON) we leave the cache untouched so
   // the badge keeps showing the last good number rather than blanking.
@@ -1540,12 +1630,20 @@ window.__ccmFlags = (function () {
       var arr = Array.isArray(j) ? j : (j.sessions || j.data || j.results);
       if (!Array.isArray(arr)) return;
       var n = 0;
+      var map = {};
       for (var i = 0; i < arr.length; i++) {
-        var st = arr[i] && arr[i].session_status;
-        if (st && !NOT_IDLE[st]) n++;
+        var s = arr[i];
+        if (isWaiting(s)) n++;
+        var state = sessionState(s);
+        var nm = s && (s.name || s.title || s.session_name);
+        // Only record the states we override (ready/awaiting); 'working' and
+        // null stay out of the map so those dots are left as the app drew them.
+        if (nm && (state === 'ready' || state === 'awaiting')) map[nm] = state;
       }
       try { localStorage.setItem(KEY, String(n)); } catch (e) {}
+      try { localStorage.setItem(MKEY, JSON.stringify(map)); } catch (e) {}
       paint();
+      paintDots();
     }).catch(function () {});
   }
 
@@ -1553,13 +1651,14 @@ window.__ccmFlags = (function () {
   function schedule() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(function () { pending = false; paint(); });
+    requestAnimationFrame(function () { pending = false; paint(); paintDots(); });
   }
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
   });
 
   paint();        // instant: show the cached count
+  paintDots();    // instant: fix dots from the cached map
   refresh();      // then reconcile against the API
   setInterval(refresh, POLL_MS);
   window.addEventListener('focus', refresh);
