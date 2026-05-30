@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.57.0
+// @version      1.58.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1248,75 +1248,87 @@ window.__ccmFlags = (function () {
 
    Opening a session (a card on the home session-list, a Recents row in the
    drawer, or any route change into a session view) auto-focuses the composer
-   textarea on mount, which pops the soft keyboard and eats the top half of the
-   screen exactly when you want to READ the session history. The ask: land in a
-   session with the keyboard down and the transcript fully visible; the composer
-   raises the keyboard only when you tap it yourself.
+   on mount, which pops the soft keyboard and eats the top half of the screen
+   exactly when you want to READ the session history. The ask: land in a session
+   with the keyboard down and the transcript fully visible; the composer raises
+   the keyboard only when you tap it yourself.
 
-   We can't stop React from calling .focus() on the textarea, so we blur it back
-   the first time it's programmatically focused after a navigation — but ONLY
-   when the focus was programmatic. A genuine composer tap (a pointerdown that
-   lands on the textarea) is recorded and left alone, so deliberately tapping the
-   input still raises the keyboard. Implementation:
+   APPROACH — suppress at the source, don't blur after.
+   The previous version (≤v1.57) patched history.pushState and blurred the
+   composer the first time it was focused after a navigation. On-device that
+   left a 1-4s flash where the keyboard rode up before the blur landed — and the
+   pushState patch likely never reached the app's router through Violentmonkey's
+   injection sandbox (the script's DOM/CSS side runs, but page-context History
+   patching is sandboxed), so the blur was rarely even armed.
 
-     1. Patch history.pushState/replaceState + listen for popstate to catch every
-        client-side route change (this script is @run-at document-start, so the
-        patch is in place before the app binds its router), and arm a ONE-SHOT
-        suppression on each.
-     2. On the first composer focusin while armed, blur it and disarm. One-shot
-        (not a time window) so re-render focus churn during later typing is never
-        touched — only the single autofocus that rides the navigation.
-     3. Honor a composer pointerdown in the last 700ms so a real tap that races
-        the navigation still wins.
+   Instead we set inputmode="none" on the composer the moment it mounts. Firefox
+   Android honors inputmode on a contenteditable and will NOT raise the virtual
+   keyboard on focus while it's "none" — so the app's autofocus lands the caret
+   with no keyboard and NO flash, because the keyboard never rises. This needs
+   no navigation interception: a MutationObserver stamps every composer as it
+   appears (a fresh element mounts per session switch), so it's immune to the
+   sandbox. On a genuine pointerdown we restore the natural inputmode and force a
+   focus cycle within the user gesture so the keyboard comes up as expected.
 
-   Verified empirically (scripts/claude_web_dom_dump.py --companion-early, blur →
-   arm → focus): programmatic refocus is blurred back, while a focus preceded by
-   a composer pointerdown, and any focus with no preceding navigation, are both
-   honored.
+   Verify on-device (Principle V): the actual VK suppression only shows on a real
+   phone (headless emulation has no soft keyboard) — confirm vvGap stays 0 on a
+   switch and goes to ~334 after a real composer tap, via the fxrdp poll.
 
    Gated on the noKbOnSwitch flag (localStorage ccmNoKbOnSwitch=0 to disable for
    a bisect). */
 (function () {
   if (!window.__ccmFlags.noKbOnSwitch) return;
   var COMPOSER = 'textarea, [contenteditable="true"]';
-  var armed = false;
-  var disarmAt = 0;        // hard cap so a route change with no composer never sticks
-  var lastComposerTap = 0;
 
-  // Remember genuine taps on the composer so we never fight the user's own focus.
-  document.addEventListener('pointerdown', function (e) {
-    var t = e.target;
-    if (t && t.closest && t.closest(COMPOSER)) lastComposerTap = Date.now();
-  }, true);
-
-  function arm() {
-    armed = true;
-    disarmAt = Date.now() + 2500; // expire if no composer ever mounts (e.g. session list)
-    if (window.__ccmDbg) window.__ccmDbg.log('nokb.arm', null);
+  // Suppress the keyboard for a composer: inputmode="none" so focus doesn't
+  // raise the VK. Stash the natural inputmode so a real tap can restore it.
+  function suppress(el) {
+    if (!el || el.getAttribute('data-ccm-kb')) return; // already handled
+    el.setAttribute('data-ccm-im', el.getAttribute('inputmode') || '');
+    el.setAttribute('inputmode', 'none');
+    el.setAttribute('data-ccm-kb', 'off');
+    if (window.__ccmDbg) window.__ccmDbg.log('nokb.suppress', null);
   }
 
-  ['pushState', 'replaceState'].forEach(function (m) {
-    var orig = history[m];
-    if (typeof orig !== 'function') return;
-    history[m] = function () {
-      var r = orig.apply(this, arguments);
-      try { arm(); } catch (e) { /* never let our hook break navigation */ }
-      return r;
-    };
-  });
-  window.addEventListener('popstate', arm);
-  arm(); // also cover a direct deep-link load that lands straight in a session
+  // The user deliberately tapped the composer -> let the keyboard rise. Restore
+  // the natural inputmode and, if it's already the active element (autofocus
+  // parked the caret here with no keyboard), blur+refocus inside this gesture so
+  // Firefox re-evaluates inputmode and shows the keyboard.
+  function release(el) {
+    if (!el || el.getAttribute('data-ccm-kb') !== 'off') return;
+    var natural = el.getAttribute('data-ccm-im') || '';
+    if (natural) el.setAttribute('inputmode', natural); else el.removeAttribute('inputmode');
+    el.setAttribute('data-ccm-kb', 'live');
+    if (window.__ccmDbg) window.__ccmDbg.log('nokb.release', null);
+    try {
+      if (document.activeElement === el) { el.blur(); el.focus(); }
+    } catch (e) { /* swallow */ }
+  }
 
-  document.addEventListener('focusin', function (e) {
-    if (!armed) return;
-    if (Date.now() > disarmAt) { armed = false; return; }
+  function scan(root) {
+    if (!root || root.nodeType !== 1) return;
+    if (root.matches && root.matches(COMPOSER)) suppress(root);
+    if (root.querySelectorAll) {
+      var nodes = root.querySelectorAll(COMPOSER);
+      for (var i = 0; i < nodes.length; i++) suppress(nodes[i]);
+    }
+  }
+
+  // Stamp composers as they mount. @run-at document-start means this observer is
+  // watching before React commits the composer, beating its post-commit autofocus.
+  new MutationObserver(function (muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var added = muts[i].addedNodes;
+      for (var j = 0; j < added.length; j++) scan(added[j]);
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  scan(document.body || document.documentElement); // deep-link load already in a session
+
+  // A genuine tap on a suppressed composer releases it (keyboard comes up).
+  document.addEventListener('pointerdown', function (e) {
     var t = e.target;
-    if (!t || !t.closest || !t.closest(COMPOSER)) return;
-    armed = false; // one-shot: only the autofocus that rides this navigation
-    // A real tap into the composer just now -> honor it, leave the keyboard up.
-    if (Date.now() - lastComposerTap < 700) return;
-    if (window.__ccmDbg) window.__ccmDbg.log('nokb.blur', null);
-    try { t.blur(); } catch (e2) { /* swallow */ }
+    var el = t && t.closest && t.closest(COMPOSER);
+    if (el) release(el);
   }, true);
 })();
 
