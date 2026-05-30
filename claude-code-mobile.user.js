@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.64.0
+// @version      1.65.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1738,10 +1738,17 @@ window.__ccmFlags = (function () {
     if (!c) return '';
     return (c.innerText || '').replace(/ /g, ' ').trim();
   }
+  // Submit gesture. On a TOUCH device the composer binds plain Enter to a
+  // newline (that's the whole bug — you can't submit from the soft keyboard),
+  // so a plain-Enter dispatch just inserts a line break. The app's actual
+  // submit keybinding is Meta+Enter (Cmd/⌘+Enter) — empirically the only Enter
+  // variant that submits under touch (Ctrl+Enter and Shift+Enter do not), and
+  // it fires from an untrusted synthetic event too. So dispatch Meta+Enter.
   function fireEnter(c) {
     ['keydown', 'keypress', 'keyup'].forEach(function (type) {
       c.dispatchEvent(new KeyboardEvent(type, {
         key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+        metaKey: true,
         bubbles: true, cancelable: true,
       }));
     });
