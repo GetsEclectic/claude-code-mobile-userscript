@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.49.0
+// @version      1.50.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -974,7 +974,45 @@ window.__ccmFlags = (function () {
    re-asserts the move whenever a re-render puts the button back in the toolbar.
    relocate() is a no-op once the button is already first child, so the observer
    settles instead of looping, and it is wrapped so a reconciliation race can
-   never throw out of our handler into the page. */
+   never throw out of our handler into the page.
+
+   REACT-SAFETY GUARD (trc claude-cloud-bootstrap-rpvf1t). Wrapping relocate() in
+   try/catch only stops OUR handler from throwing — it does nothing about React's
+   OWN later reconciliation of the toolbar we stole the "+" from. The "+" and the
+   "Accept edits" permission-mode toggle are direct siblings; tapping the toggle
+   re-renders that toolbar, and React's commit calls
+   toolbar.insertBefore(node, plus) using the relocated "+" as the reference
+   child — but it no longer lives there, so the native call throws
+   "NotFoundError: ... not a child of this node" and the app's error boundary
+   shows "Something went wrong". Confirmed empirically:
+   scripts/ccm_accept_edits_repro.py reproduces three such throws + the error
+   boundary WITH this script and none without.
+
+   Fix: defang it surgically. Tag only our relocated "+" (plus.__ccmRelocated)
+   and make insertBefore / removeChild treat THAT ONE node as a no-op when React
+   operates on a parent it no longer belongs to. Every other node, and every
+   normal call, keeps exact native behaviour — the blast radius is the single
+   button we moved. */
+(function () {
+  var origInsert = Node.prototype.insertBefore;
+  Node.prototype.insertBefore = function (newNode, refNode) {
+    if (refNode && refNode.__ccmRelocated && refNode.parentNode !== this) {
+      // React used our relocated "+" as an insertion reference in a parent it no
+      // longer lives in. Append instead of throwing so reconciliation survives.
+      return origInsert.call(this, newNode, null);
+    }
+    return origInsert.call(this, newNode, refNode);
+  };
+  var origRemove = Node.prototype.removeChild;
+  Node.prototype.removeChild = function (child) {
+    if (child && child.__ccmRelocated && child.parentNode !== this) {
+      // React is unmounting the old toolbar and trying to remove the "+" from it,
+      // but we already moved it out; the DOM is in the desired state, so no-op.
+      return child;
+    }
+    return origRemove.call(this, child);
+  };
+})();
 (function () {
   function relocate() {
     try {
@@ -983,6 +1021,7 @@ window.__ccmFlags = (function () {
       if (!input || !plus) return;
       var row = input.parentElement; // div.relative.flex.w-full
       if (!row) return;
+      plus.__ccmRelocated = true; // arm the react-safety guard above for this node
       if (plus.parentElement === row && row.firstElementChild === plus) return;
       row.insertBefore(plus, row.firstChild);
     } catch (e) { /* never let a reconciliation race break the composer */ }
