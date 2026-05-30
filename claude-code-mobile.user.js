@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.58.0
+// @version      1.59.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1494,4 +1494,84 @@ window.__ccmFlags = (function () {
     childList: true, subtree: true,
   });
   update();
+})();
+
+/* Root scroll-pin invariant (v1.59). The shared root cause behind the whole
+   top-bar-disappearance family: overflow:hidden hides the scrollbar and blocks
+   USER scrolling, but it does NOT reset an existing scrollTop and does NOT stop
+   the browser's own programmatic scroll-into-view from moving an element. The
+   app's layout is taller than the visible area whenever the soft keyboard is up
+   (100dvh tracks the layout viewport, which the keyboard doesn't shrink), so the
+   browser has slack to scroll a root container to keep the focused composer in
+   view — carrying the header, which lives at the top of that container, off the
+   top of the screen.
+
+   Three independent root containers can hold that scroll: <html> (window.scrollY
+   / documentElement.scrollTop), <body> (body.scrollTop), and .epitaxy-root. Rule
+   11's height clamp + the v1.44 unpan handled the <html>-scroll and visual-
+   viewport-pan vectors, but only while armed — and only for those two vectors.
+   The menu->session-switch-from-composer bug slipped through as <body>.scrollTop
+   reaching 333.9px while overflow:hidden was in force (RDP capture 2026-05-30:
+   menuY -324, scrollY 0, vvOffTop 0, bodyScrollTop 333.9). None of html/body/
+   .epitaxy-root is ever LEGITIMATELY scrolled — the transcript and the sidebar
+   Recents list are deeper nested scrollers that own their own overflow — so the
+   correct fix is an unconditional invariant, not another armed/disarmed clamp:
+   pin all three roots at scrollTop=0 always.
+
+   Capture-phase 'scroll' listeners snap each root back to 0 the instant the
+   browser scrolls it (capture so it's corrected before paint); a document-level
+   capture listener catches the modes where Firefox routes body scroll through
+   the document. Deliberately NOT gated on width or .ccm-kb-open: the gating
+   seams are exactly what let prior fixes miss states. Setting scrollTop=0 on an
+   already-0 / non-scrollable element is a no-op, so this is inert in the
+   keyboard-down and desktop layouts (nothing scrolls the roots there) and only
+   acts when something would have carried the header away.
+
+   Verified empirically over Firefox-Android RDP (2026-05-30): the broken kb-up+
+   drawer-open / stale-clamp state recurred dozens of times across 8+ session
+   navigations with the header pinned at y=10 in every frame (was -324 without
+   this), zero header-off-top frames — confirmed in both the experimental form
+   and this shipped form. */
+(function () {
+  function pin(el) {
+    if (!el) return;
+    if (el.scrollTop !== 0) el.scrollTop = 0;
+    if (el.scrollLeft !== 0) el.scrollLeft = 0;
+  }
+  function roots() {
+    return [document.documentElement, document.body,
+            document.querySelector('.epitaxy-root')];
+  }
+  function pinAll() { roots().forEach(pin); }
+  // Snap a specific root back the moment the browser scrolls it.
+  function onScroll(e) {
+    var t = e.target;
+    if (t === document || t === document.documentElement ||
+        t === document.body || (t && t.classList && t.classList.contains('epitaxy-root'))) {
+      pin(t === document ? document.scrollingElement : t);
+      // Belt-and-suspenders: a body scroll routed through document, or an
+      // .epitaxy-root remount, can leave a sibling root dirty. Cheap to sweep.
+      pinAll();
+    }
+  }
+  // document-start: body / .epitaxy-root may not exist yet. Bind on document
+  // (capture) so we catch scroll events from descendants that bubble up to it,
+  // and also bind directly to each root as it appears. The direct binds are
+  // belt-and-suspenders; the document capture listener is the load-bearing one.
+  document.addEventListener('scroll', onScroll, true);
+  var bound = new WeakSet();
+  function bindRoots() {
+    roots().forEach(function (el) {
+      if (el && !bound.has(el)) {
+        bound.add(el);
+        el.addEventListener('scroll', function () { pin(el); }, true);
+      }
+    });
+  }
+  bindRoots();
+  pinAll();
+  // Re-bind as the SPA mounts / remounts .epitaxy-root, and re-assert the pin
+  // (a remount can arrive already-scrolled before any scroll event fires).
+  new MutationObserver(function () { bindRoots(); pinAll(); })
+    .observe(document.documentElement, { childList: true, subtree: true });
 })();
