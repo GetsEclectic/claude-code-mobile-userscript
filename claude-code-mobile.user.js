@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.56.0
+// @version      1.57.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -480,6 +480,37 @@ window.__ccmStyleEl = GM_addStyle(`
   [aria-label="Prompt"][contenteditable="true"] {
     -webkit-user-select: text !important;
     user-select: text !important;
+  }
+
+  /* 23. Idle-session count badge on the top-left menu (sidebar toggle). The
+     companion JS below counts session rows whose status is anything other than
+     "Working" / "Running" (i.e. waiting on Ben — Needs input / Ready for review
+     / Completed / Idle) and appends a .ccm-idle-badge chip to the button.
+     Rule 10 already makes the button position:relative at phone widths, so the
+     badge anchors to its top-right corner. pointer-events:none so a tap in the
+     corner still falls through to the button (the badge sits inside rule 10's
+     hit-slop). Amber reads as "attention" against both the dark and light bar.
+     Scoped here under @media so a desktop visit never shows it; the companion
+     also gates on the same media query and removes the chip off-phone. */
+  aside.dframe-sidebar [aria-label="Open sidebar"] .ccm-idle-badge {
+    position: absolute !important;
+    top: -7px !important;
+    right: -7px !important;
+    min-width: 16px !important;
+    height: 16px !important;
+    box-sizing: border-box !important;
+    padding: 0 4px !important;
+    border-radius: 8px !important;
+    background: #d97706 !important;
+    color: #fff !important;
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    line-height: 16px !important;
+    text-align: center !important;
+    white-space: nowrap !important;
+    pointer-events: none !important;
+    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35) !important;
+    z-index: 5 !important;
   }
 }
 `);
@@ -1347,4 +1378,108 @@ window.__ccmFlags = (function () {
   window.addEventListener('contextmenu', function (e) {
     e.stopImmediatePropagation();
   }, true);
+})();
+
+/* Rule 23's companion. Stamp the top-left menu (sidebar toggle) with a badge
+   showing how many sessions are idle — anything not actively Working/Running.
+
+   How a session's status is read: each [aria-label^="Open session"] row renders
+   a small colored status dot (span.rounded-full) followed by a status-label
+   span. The two share a flex wrapper, so the label is
+   dot.parentElement.parentElement's first .text-footnote. We anchor on the dot
+   rather than "first .text-footnote in the row" because the repo name and the
+   relative timestamp are ALSO .text-footnote — the dot pins us to the real
+   status. If the dot structure can't be found we return '' and skip the row
+   (don't guess), so the count degrades to "lower" rather than counting a repo
+   name as a status. Known status strings: cloud sessions show Working /
+   "Needs input" / "Ready for review" / Completed; local-agent sessions show
+   Running / Ready / Idle. Idle = anything but Working and Running.
+
+   The session list stays mounted in the persistent sidebar even while a single
+   session is open, so the live count is usually available in-session too. As a
+   fallback (e.g. a layout where the list unmounts), the last live count is
+   cached in localStorage and shown until a fresh count is computable, so the
+   badge never blanks mid-navigation.
+
+   Re-runs on a debounced MutationObserver (status changes, route changes, and
+   the SPA remounting the button all surface as DOM mutations). The writes are
+   guarded to be idempotent — we only touch the DOM when the count or the badge
+   presence actually changes — so stamping never feeds its own observer into a
+   loop. Phone-only, matching the rest of the sheet: off-phone we remove the
+   chip and bail. */
+(function () {
+  var MQ = '(max-width: 900px)';
+  var KEY = 'ccmIdleCount';
+
+  function statusOf(row) {
+    var dot = row.querySelector('span[class*="rounded-full"]');
+    if (dot && dot.parentElement && dot.parentElement.parentElement) {
+      var lbl = dot.parentElement.parentElement.querySelector('.text-footnote');
+      if (lbl) return (lbl.textContent || '').trim();
+    }
+    return '';
+  }
+
+  function isIdle(s) {
+    return s !== '' && s !== 'Working' && s !== 'Running';
+  }
+
+  // null => the session list isn't rendered; keep the last known count.
+  function countIdle() {
+    var rows = document.querySelectorAll('[aria-label^="Open session"]');
+    if (!rows.length) return null;
+    var n = 0;
+    for (var i = 0; i < rows.length; i++) {
+      if (isIdle(statusOf(rows[i]))) n++;
+    }
+    return n;
+  }
+
+  function cached() {
+    var v;
+    try { v = parseInt(localStorage.getItem(KEY), 10); } catch (e) { v = NaN; }
+    return isNaN(v) ? 0 : v;
+  }
+
+  function update() {
+    var btn = document.querySelector('aside.dframe-sidebar [aria-label="Open sidebar"]')
+           || document.querySelector('[aria-label="Open sidebar"]');
+    if (!btn) return;
+
+    if (!window.matchMedia(MQ).matches) {
+      var off = btn.querySelector('.ccm-idle-badge');
+      if (off) off.remove();
+      return;
+    }
+
+    var live = countIdle();
+    if (live !== null) {
+      try { localStorage.setItem(KEY, String(live)); } catch (e) {}
+    }
+    var n = live !== null ? live : cached();
+    var label = n > 99 ? '99+' : String(n);
+
+    var badge = btn.querySelector('.ccm-idle-badge');
+    if (n > 0) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'ccm-idle-badge';
+        btn.appendChild(badge);
+      }
+      if (badge.textContent !== label) badge.textContent = label;
+    } else if (badge) {
+      badge.remove();
+    }
+  }
+
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; update(); });
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true,
+  });
+  update();
 })();
