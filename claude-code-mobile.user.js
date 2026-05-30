@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.53.0
+// @version      1.54.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -169,8 +169,9 @@ window.__ccmStyleEl = GM_addStyle(`
      The visible chip stays 32px (bar-aligned), but 32px is a small touch target,
      so a transparent ::after extends the HIT AREA past the chip (hit-slop): the
      pseudo is part of the button, so taps in the slop still fire the button. Slop
-     reaches the screen's left edge and ~8px above/below, but stops at the chip's
-     right edge so it never steals taps from the title text in the gutter. */
+     reaches past the screen's top-left corner (18px above and left of the chip,
+     8px below), but stops at the chip's right edge so it never steals taps from
+     the title text in the gutter. */
   aside.dframe-sidebar [aria-label="Open sidebar"] {
     height: 32px !important;
     min-height: 32px !important;
@@ -182,9 +183,9 @@ window.__ccmStyleEl = GM_addStyle(`
   aside.dframe-sidebar [aria-label="Open sidebar"]::after {
     content: "" !important;
     position: absolute !important;
-    top: -8px !important;
+    top: -18px !important;
     bottom: -8px !important;
-    left: -8px !important;
+    left: -18px !important;
     right: 0 !important;
   }
 
