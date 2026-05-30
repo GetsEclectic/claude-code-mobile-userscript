@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.68.0
+// @version      1.69.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1935,4 +1935,82 @@ window.__ccmFlags = (function () {
     } catch (e) { /* swallow */ }
   }
   setInterval(syncCue, 400);
+})();
+
+/* Rule 22's companion — opaque backdrop for the scrolled AskUserQuestion card.
+   Rule 22 caps .epitaxy-approval-card at 40vh + overflow-y:auto, turning it into
+   a scroll container on the phone. The card's own background is transparent; the
+   surface you see comes from an inner position:absolute; inset:0 layer, which
+   sizes to the card's CLIENT box (40vh), NOT its scrollHeight. So once the card
+   scrolls, content past the first 40vh has no opaque layer behind it: on real
+   Android Chromium the bold question title bleeds through / overlaps the option
+   rows (Ben's phone screenshot, 2026-05-30 — verified the title is position
+   static, NOT sticky, so this backdrop gap is the cause, not a pinned header).
+   Fix: paint the scroll CONTAINER itself with an opaque background. A scroll
+   container's own background-color covers its full scrollable region (unlike the
+   inset:0 child) and forces a proper backing layer, which also kills any
+   scroll-repaint ghosting. Colour is read at runtime from the nearest opaque
+   ancestor so it tracks light/dark automatically instead of hard-coding a
+   surface value. Phone-only (same max-width:900px gate as rule 22), and only
+   while the card is actually scrollable, so a desktop visit and short cards are
+   untouched. */
+(function () {
+  var MQ = '(max-width: 900px)';
+  function onPhone() {
+    try { return window.matchMedia(MQ).matches; } catch (e) { return false; }
+  }
+  function opaque(c) {
+    if (!c || c === 'transparent') return false;
+    var m = c.match(/^rgba?\(([^)]+)\)/);
+    if (m) {
+      var p = m[1].split(',');
+      if (p.length === 4 && parseFloat(p[3]) === 0) return false; // alpha 0
+    }
+    return true;
+  }
+  // Nearest ancestor with a non-transparent background = the real surface the
+  // card sits on; matching it keeps the fill visually continuous in either theme.
+  function surfaceColor(card) {
+    var n = card.parentElement;
+    while (n && n !== document.documentElement) {
+      if (opaque(getComputedStyle(n).backgroundColor)) {
+        return getComputedStyle(n).backgroundColor;
+      }
+      n = n.parentElement;
+    }
+    return null;
+  }
+  function apply() {
+    if (!onPhone()) return;
+    var cards = document.querySelectorAll('.epitaxy-approval-card');
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      // Only act once rule 22 has actually made the card scroll (content > cap).
+      if (card.scrollHeight <= card.clientHeight + 1) {
+        if (card.dataset.ccmBackdrop) {
+          card.style.backgroundColor = '';
+          delete card.dataset.ccmBackdrop;
+        }
+        continue;
+      }
+      var col = surfaceColor(card);
+      if (col && card.style.backgroundColor !== col) {
+        card.style.backgroundColor = col;
+        card.dataset.ccmBackdrop = '1';
+      }
+    }
+  }
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; apply(); });
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true,
+  });
+  // The card can flip to scrollable after async option render (or a theme
+  // change) without a mutation the observer flags; a cheap interval covers both.
+  setInterval(apply, 500);
+  apply();
 })();
