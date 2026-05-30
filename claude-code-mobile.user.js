@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.50.0
+// @version      1.51.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1092,40 +1092,89 @@ window.__ccmFlags = (function () {
    "Open sidebar" button) only dismisses the keyboard — it takes a second tap to
    actually open the drawer.
 
-   What's actually happening (settled empirically, scripts/ptr_preventdefault_-
-   probe.py): on touch the button's click DOES fire on the first tap, with or
-   without preventDefault — so the click is not being suppressed, it's reaching
-   the menu. The drawer fails to open because the rule-11 companion above reacts
-   to the keyboard-close resize mid-gesture — it nudges the transcript scroller
-   (scrollTop += delta) and releases its height pin — which moves content under
-   the finger, and the browser then treats the tap as a scroll and cancels the
-   already-fired click. The previous build tried to stop this by preventDefault-
-   ing pointerdown to keep the composer focused (so the keyboard never closes and
-   no resize fires); that holds in a desktop-touch sandbox but did NOT keep the
-   keyboard up on the real phone, so the resize-reflow still ran and still ate
-   the tap.
+   Mechanism (settled empirically, scripts/ptr_preventdefault_probe.py): on touch
+   the button's click DOES fire on the first tap — it's not being suppressed, it
+   reaches the menu. The drawer fails to open because content reflows under the
+   finger mid-gesture (the soft keyboard closing the moment the composer blurs),
+   so the browser reclassifies the tap as a scroll and CANCELS the already-fired
+   click. Prior builds attacked the reflow source: freeze our own rule-11 resize
+   reaction (layer 1 below) and preventDefault pointerdown to keep the composer
+   focused so the keyboard never closes (layer 2). But the keyboard close — and
+   therefore the browser's own native reflow — could not be stopped on the real
+   phone, so the native click kept getting eaten. v1.51 stops fighting the
+   reflow and stops depending on the native click reaching the menu at all.
 
-   Fix (two layers, robust to whether the keyboard actually closes):
-     1. Arm window.__ccmSidebarTapUntil for ~700ms on a sidebar-toggle
-        pointerdown. The rule-11 companion checks it and freezes its resize
-        reaction for that window, so the layout stays perfectly still and the
-        first tap's click lands. Armed UNCONDITIONALLY (not gated on ccm-kb-open)
-        so it still works if keyboard detection is off on a given device.
-     2. Keep the preventDefault while ccm-kb-open: where the platform honors it
-        the keyboard never closes and no resize fires at all (best case). It's
-        confirmed harmless on touch (does not suppress the click).
-   We do NOT blur/force the keyboard down ourselves: opening the drawer moves
-   focus into it (React focus-trap), dropping the keyboard on its own. An earlier
-   build that forced the keyboard down here reflowed a frame after the drawer
-   opened and the drawer read it as an outside tap, closing itself. */
+   v1.51 fix — drive the toggle with a PROGRAMMATIC click, immune to the
+   tap-vs-scroll heuristic:
+     - Track pointerdown position on the toggle. On pointerup, if the pointer
+       barely moved (a tap, not a scroll/drag), preventDefault the gesture and
+       call btn.click() ourselves. A synthetic .click() always dispatches a
+       click event regardless of whether the browser would have cancelled the
+       native one — so the menu opens on the FIRST tap even when the keyboard
+       reflow would otherwise have killed it.
+     - A capture-phase click listener swallows the browser's own (possibly
+       already-cancelled, possibly not) native click on the toggle so it can't
+       double-toggle the drawer back shut; our own programmatic click is let
+       through via the `fireOwn` one-shot flag. Net effect: exactly one toggle
+       per tap, every time.
+     - Scoped to touch pointers on phone widths (<=900px) so desktop mouse and
+       the tablet/desktop layout are untouched.
+
+   Layer 1 (the rule-11 freeze, window.__ccmSidebarTapUntil) is kept: even though
+   click delivery no longer depends on it, holding the layout still through the
+   tap keeps the drawer-open frame from janking. We do NOT blur/force the keyboard
+   down ourselves: opening the drawer moves focus into it (React focus-trap),
+   dropping the keyboard on its own. An earlier build that forced the keyboard
+   down reflowed a frame after the drawer opened and the drawer read it as an
+   outside tap, closing itself. */
 (function () {
   var SEL = '[aria-label="Open sidebar"]';
+  var sx = 0, sy = 0, tracking = false, fireOwn = false, ownFiredAt = 0;
+
+  // Layer 1: freeze rule-11's resize reaction through the tap (layout still).
   document.addEventListener('pointerdown', function (e) {
-    if (!e.target || !e.target.closest || !e.target.closest(SEL)) return;
-    window.__ccmSidebarTapUntil = Date.now() + 700; // freeze rule-11 through the tap
+    var btn = e.target && e.target.closest && e.target.closest(SEL);
+    if (!btn) { tracking = false; return; }
+    window.__ccmSidebarTapUntil = Date.now() + 700;
     if (window.__ccmDbg) window.__ccmDbg.log('guard.arm', { ms: 700 });
-    if (!document.documentElement.classList.contains('ccm-kb-open')) return;
-    e.preventDefault(); // keep the composer focused where honored -> no resize at all
+    // Only take over click delivery for touch taps on phone widths; leave
+    // desktop mouse / wide layouts on the native path.
+    if (e.pointerType === 'touch' && window.innerWidth <= 900) {
+      tracking = true; sx = e.clientX; sy = e.clientY;
+    } else {
+      tracking = false;
+    }
+  }, true);
+
+  // v1.51: programmatic-click delivery. On a tap (small movement), suppress the
+  // gesture's native click and dispatch our own — immune to the scroll heuristic.
+  document.addEventListener('pointerup', function (e) {
+    if (!tracking) return;
+    tracking = false;
+    var btn = e.target && e.target.closest && e.target.closest(SEL);
+    if (!btn) return;
+    var dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.sqrt(dx * dx + dy * dy) > 12) return; // a real scroll/drag — leave it
+    e.preventDefault();
+    fireOwn = true;
+    ownFiredAt = Date.now();
+    if (window.__ccmDbg) window.__ccmDbg.log('guard.fire', null);
+    btn.click();
+  }, true);
+
+  // Swallow the browser's own native click on the toggle so it doesn't
+  // double-toggle the drawer back shut; let our programmatic click through.
+  // click is a MouseEvent (no pointerType), so we can't re-check touch here —
+  // instead gate on `fireOwn` (our synchronous dispatch) for the allow, and a
+  // short post-dispatch window for the native straggler from the same gesture.
+  document.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest && e.target.closest(SEL);
+    if (!btn) return;
+    if (fireOwn) { fireOwn = false; return; } // our dispatch — allow through
+    if (Date.now() - ownFiredAt < 700) { // native straggler from our tap — swallow
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
   }, true);
 })();
 
