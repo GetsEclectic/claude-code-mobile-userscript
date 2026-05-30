@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.60.0
+// @version      1.61.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -463,23 +463,6 @@ window.__ccmStyleEl = GM_addStyle(`
   aside[aria-label="Sidebar"] button[aria-label="More navigation items"],
   aside[aria-label="Sidebar"] button[data-ccm-hide-row] {
     display: none !important;
-  }
-
-  /* 22. Stock claude.ai/code puts 'select-none' (user-select:none) on
-     .epitaxy-root, which cascades onto the Tiptap/ProseMirror composer even
-     though it's contenteditable. On Android Chrome the native text-selection
-     handles and the Copy/Cut/Paste action bar read -webkit-user-select
-     directly (independent of contenteditable), so with it computed to 'none'
-     a long-press then Select all leaves a logical selection with NO visible
-     left handle and NO toolbar — the copy/cut buttons are unreachable. Force
-     the composer editable back to user-select:text so the native selection UI
-     paints. Reproduces with the script OFF (it's the app's own select-none), so
-     this is a workaround, not a regression fix. Scoped to the ProseMirror /
-     Prompt editable so the surrounding select-none on chrome is untouched. */
-  .ProseMirror[contenteditable="true"],
-  [aria-label="Prompt"][contenteditable="true"] {
-    -webkit-user-select: text !important;
-    user-select: text !important;
   }
 
   /* 23. Idle-session count badge on the top-left menu (sidebar toggle). The
@@ -1574,4 +1557,55 @@ window.__ccmFlags = (function () {
   // (a remount can arrive already-scrolled before any scroll event fires).
   new MutationObserver(function () { bindRoots(); pinAll(); })
     .observe(document.documentElement, { childList: true, subtree: true });
+})();
+
+/* Fix: long-press -> "Select all" in the composer leaves NO native selection
+   handles and NO Copy/Cut/Paste action bar on Android — the buttons are
+   unreachable. Root cause (verified on a real Android renderer + by
+   instrumenting the live app): when the selection expands, TipTap/ProseMirror's
+   view reconciliation (met.setSelection -> Aet -> vst.updateStateInner) calls
+   Selection.prototype.collapse to re-place the cursor from its internal state,
+   which on Android tears down the just-created native action mode. (NOT a CSS
+   issue — user-select / contain / overflow were all excluded on-device; and NOT
+   removeAllRanges/empty/setBaseAndExtent — only `collapse` fires, with a stack
+   into the app bundle.) Reproduces with this script OFF, so it's the app's bug;
+   we work around it by suppressing that one collapse.
+
+   Guard: when a NON-collapsed selection appears inside the composer (a user
+   Select all), arm a short window; during it, no-op Selection.prototype.collapse
+   calls that would discard a live selection still inside the composer. Tightly
+   scoped — only fires for a non-collapsed composer selection within ~700ms of
+   the expand, so normal caret placement and typing (collapsed, or outside the
+   window/composer) are untouched. Patches the prototype at document-start so the
+   wrapper is in place before ProseMirror's reconciliation runs. */
+(function () {
+  var SEL = '.tiptap.ProseMirror[contenteditable], .ProseMirror[contenteditable="true"], [aria-label="Prompt"][contenteditable="true"]';
+  var expandedAt = 0;
+  var GUARD_MS = 700;
+
+  function composerEl() { return document.querySelector(SEL); }
+  function selInComposer(sel) {
+    if (!sel || sel.rangeCount === 0) return false;
+    var c = composerEl();
+    var n = sel.anchorNode;
+    return !!(c && n && c.contains(n));
+  }
+
+  // A non-collapsed selection inside the composer = the user just expanded one
+  // (long-press -> Select all). Arm the guard window.
+  document.addEventListener('selectionchange', function () {
+    var sel = window.getSelection && window.getSelection();
+    if (sel && !sel.isCollapsed && selInComposer(sel)) expandedAt = Date.now();
+  }, true);
+
+  var origCollapse = Selection.prototype.collapse;
+  Selection.prototype.collapse = function () {
+    try {
+      if (expandedAt && (Date.now() - expandedAt) < GUARD_MS &&
+          !this.isCollapsed && selInComposer(this)) {
+        return; // keep the user's Select all alive so the native action bar stays
+      }
+    } catch (e) { /* fall through to native on any probe error */ }
+    return origCollapse.apply(this, arguments);
+  };
 })();
