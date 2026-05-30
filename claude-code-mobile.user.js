@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.54.0
+// @version      1.55.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -926,26 +926,42 @@ window.__ccmFlags = (function () {
     if (window.__ccmDbg && wasOpen !== open) window.__ccmDbg.log('drawer', {
       from: wasOpen ? 1 : 0, to: open ? 1 : 0,
     });
-    // Drawer just closed. The rule-11 companion's first-tap guard
-    // (__ccmSidebarTapUntil) may have suppressed --ccm-vvh / .ccm-kb-open
-    // updates during the open/close cycle — e.g. the keyboard-close resize
-    // that fires when the drawer takes focus is bailed out and never
-    // re-applied. When the drawer closes and rule 11's height pin re-arms,
-    // the stale --ccm-vvh strands html at the old keyboard-up height even
-    // though the visible area is now larger, leaving a black gap below the
-    // composer. Force the rule-11 sync handler to re-derive from live state:
-    // clear the guard and dispatch a synthetic resize on visualViewport.
-    if (wasOpen && !open) {
-      window.__ccmSidebarTapUntil = 0;
-      try {
-        var vv = window.visualViewport;
-        if (vv && typeof vv.dispatchEvent === 'function') {
-          if (window.__ccmDbg) window.__ccmDbg.log('synth.resize', {
-            vv: vv ? Math.round(vv.height) : '-',
-          });
-          vv.dispatchEvent(new Event('resize'));
-        }
-      } catch (e) { /* never let a sync race break the page */ }
+    // Drawer just opened OR closed — both edges need a forced rule-11 re-sync.
+    // The rule-11 companion's first-tap guard (__ccmSidebarTapUntil) freezes
+    // sync() through the tap gesture, so the keyboard-dismiss resize that fires
+    // when the drawer takes focus is bailed out and never re-applied. That
+    // strands --ccm-vvh / --ccm-vvh-drawer / .ccm-kb-open at the SHORT
+    // keyboard-up height:
+    //   - On CLOSE: rule 11's height pin re-arms with the stale short --ccm-vvh,
+    //     leaving a black gap below the composer.
+    //   - On OPEN (the kb-up→tap-menu case): .ccm-kb-open lingers and rule 11b
+    //     (html.ccm-kb-open.ccm-drawer-open) pins html+body to the stale short
+    //     --ccm-vvh-drawer, so the drawer panel fills only ~60% of the screen and
+    //     the area the keyboard vacated renders as empty grey — the rest of the
+    //     page never re-lays-out. Once the guarded dismiss-resize is swallowed,
+    //     no further resize may fire, so the clamp persists indefinitely.
+    // Fix: on either transition, clear the guard (the tap has already succeeded —
+    // aria-expanded flipped — so the scroll-reclassification risk it protected
+    // against is past) and re-derive geometry from live state. A single immediate
+    // re-sync can still capture a mid-dismiss (short) height, so re-fire on a
+    // short ladder to catch the settled post-keyboard geometry even when the
+    // browser emits no further resize event of its own.
+    if (wasOpen !== open) {
+      var forceResync = function () {
+        window.__ccmSidebarTapUntil = 0;
+        try {
+          var vv = window.visualViewport;
+          if (vv && typeof vv.dispatchEvent === 'function') {
+            if (window.__ccmDbg) window.__ccmDbg.log('synth.resize', {
+              vv: vv ? Math.round(vv.height) : '-', edge: open ? 'open' : 'close',
+            });
+            vv.dispatchEvent(new Event('resize'));
+          }
+        } catch (e) { /* never let a sync race break the page */ }
+      };
+      forceResync();
+      setTimeout(forceResync, 150);
+      setTimeout(forceResync, 400);
     }
   }
   var pending = false;
