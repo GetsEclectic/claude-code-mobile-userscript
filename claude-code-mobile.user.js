@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.52.0
+// @version      1.53.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
 // @homepageURL  https://github.com/GetsEclectic/claude-code-mobile-userscript
-// @downloadURL  https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
-// @updateURL    https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
+// @downloadURL  https://cdn.jsdelivr.net/gh/GetsEclectic/claude-code-mobile-userscript@main/claude-code-mobile.user.js
+// @updateURL    https://cdn.jsdelivr.net/gh/GetsEclectic/claude-code-mobile-userscript@main/claude-code-mobile.user.js
 // ==/UserScript==
 
 /* Scoped to phone widths so a desktop visit is untouched. Targets stable
