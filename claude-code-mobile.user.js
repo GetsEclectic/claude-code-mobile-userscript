@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.65.0
+// @version      1.66.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -463,6 +463,22 @@ window.__ccmStyleEl = GM_addStyle(`
   aside[aria-label="Sidebar"] button[aria-label="More navigation items"],
   aside[aria-label="Sidebar"] button[data-ccm-hide-row] {
     display: none !important;
+  }
+
+  /* 22. AskUserQuestion card: cap height so it never fills the screen, and make
+     its body scrollable so all option text + Submit/Skip are reachable without
+     the transcript being pushed off-screen. The card container is
+     .epitaxy-approval-card (same stable epitaxy- naming as .epitaxy-chat-column
+     etc.), confirmed via --ancestry [aria-label="Dismiss question"]: it is the
+     first non-button, non-span ancestor with meaningful size, and it is the
+     natural scroll host because it wraps title, all option rows, the free-text
+     input, and the Submit/Skip footer. Cap at 40vh so the card occupies under
+     half the screen and the transcript stays clearly readable above it; any
+     overflow scrolls within the card. overflow-y:auto not hidden so Submit/Skip
+     (inside the card) are reachable by scrolling. */
+  .epitaxy-approval-card {
+    max-height: 40vh !important;
+    overflow-y: auto !important;
   }
 
   /* 23. Idle-session count badge on the top-left menu (sidebar toggle). The
