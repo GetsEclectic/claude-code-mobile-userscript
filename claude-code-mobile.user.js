@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.62.0
+// @version      1.63.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -466,9 +466,9 @@ window.__ccmStyleEl = GM_addStyle(`
   }
 
   /* 23. Idle-session count badge on the top-left menu (sidebar toggle). The
-     companion JS below counts session rows whose status is anything other than
-     "Working" / "Running" (i.e. waiting on Ben — Needs input / Ready for review
-     / Completed / Idle) and appends a .ccm-idle-badge chip to the button.
+     companion JS below counts idle sessions from the /v1/sessions API (every
+     status except running / pending / archived / deleted — i.e. idle +
+     requires_action) and appends a .ccm-idle-badge chip to the button.
      Rule 10 already makes the button position:relative at phone widths, so the
      badge anchors to its top-right corner. pointer-events:none so a tap in the
      corner still falls through to the button (the badge sits inside rule 10's
@@ -1376,59 +1376,46 @@ window.__ccmFlags = (function () {
 })();
 
 /* Rule 23's companion. Stamp the top-left menu (sidebar toggle) with a badge
-   showing how many sessions are idle — anything not actively Working/Running.
+   showing how many sessions are idle.
 
-   How a session's status is read: each [aria-label^="Open session"] row renders
-   a small colored status dot (span.rounded-full) followed by a status-label
-   span. The two share a flex wrapper, so the label is
-   dot.parentElement.parentElement's first .text-footnote. We anchor on the dot
-   rather than "first .text-footnote in the row" because the repo name and the
-   relative timestamp are ALSO .text-footnote — the dot pins us to the real
-   status. If the dot structure can't be found we return '' and skip the row
-   (don't guess), so the count degrades to "lower" rather than counting a repo
-   name as a status. Known status strings: cloud sessions show Working /
-   "Needs input" / "Ready for review" / Completed; local-agent sessions show
-   Running / Ready / Idle. Idle = anything but Working and Running.
+   COUNT SOURCE — the API, not the DOM. The first cut counted session rows in
+   the page, but the landing list is collapsed ("Show N more" / "View all") and
+   the sidebar drawer's recents carry no status, so the DOM only ever exposes a
+   handful of rows — the badge under-counted (showed 4 of ~10). The real tally
+   lives behind GET https://claude.ai/v1/sessions, which returns every session
+   with a session_status. We fetch that and count client-side.
 
-   The session list stays mounted in the persistent sidebar even while a single
-   session is open, so the live count is usually available in-session too. As a
-   fallback (e.g. a layout where the list unmounts), the last live count is
-   cached in localStorage and shown until a fresh count is computable, so the
-   badge never blanks mid-navigation.
+   What counts as "idle": the API status enum is
+   idle / running / requires_action / archived / deleted / pending. A session is
+   idle (waiting on Ben) when it is NOT actively working (running), NOT a
+   provisioning placeholder (pending), and NOT put away (archived / deleted).
+   So: count everything whose status is not in {running, pending, archived,
+   deleted}. That yields idle + requires_action (+ any future "waiting" status
+   the app adds), matching the human "sitting idle, waiting for me" reading.
 
-   Re-runs on a debounced MutationObserver (status changes, route changes, and
-   the SPA remounting the button all surface as DOM mutations). The writes are
-   guarded to be idempotent — we only touch the DOM when the count or the badge
-   presence actually changes — so stamping never feeds its own observer into a
-   loop. Phone-only, matching the rest of the sheet: off-phone we remove the
-   chip and bail. */
+   Headers: the endpoint 400s without anthropic-version and 404s without the
+   org uuid. The org uuid is harvested from a URL the app has already fetched
+   (performance resource entries / page HTML); anthropic-version is the public
+   pinned date. credentials:include reuses the logged-in cookie.
+
+   Cadence: the payload is ~1.3MB (archived sessions dominate and the API
+   ignores filter params), so we DON'T poll per-DOM-mutation. We refetch on an
+   interval and when the tab regains focus/visibility — cheap and current
+   enough for a count that changes on the minute scale. The latest count is
+   cached in localStorage so the badge paints instantly on the next load and
+   never blanks while a refetch is in flight or fails.
+
+   Badge painting is decoupled from counting: a debounced MutationObserver
+   re-stamps the chip whenever the SPA remounts the toggle button, reading the
+   cached count. Idempotent writes (touch the DOM only when the count or chip
+   presence changes) keep the observer from feeding itself. Phone-only,
+   matching the rest of the sheet: off-phone we remove the chip and bail. */
 (function () {
   var MQ = '(max-width: 900px)';
   var KEY = 'ccmIdleCount';
-
-  function statusOf(row) {
-    var dot = row.querySelector('span[class*="rounded-full"]');
-    if (dot && dot.parentElement && dot.parentElement.parentElement) {
-      var lbl = dot.parentElement.parentElement.querySelector('.text-footnote');
-      if (lbl) return (lbl.textContent || '').trim();
-    }
-    return '';
-  }
-
-  function isIdle(s) {
-    return s !== '' && s !== 'Working' && s !== 'Running';
-  }
-
-  // null => the session list isn't rendered; keep the last known count.
-  function countIdle() {
-    var rows = document.querySelectorAll('[aria-label^="Open session"]');
-    if (!rows.length) return null;
-    var n = 0;
-    for (var i = 0; i < rows.length; i++) {
-      if (isIdle(statusOf(rows[i]))) n++;
-    }
-    return n;
-  }
+  var POLL_MS = 45000;
+  // Statuses that are NOT idle: actively working, provisioning, or put away.
+  var NOT_IDLE = { running: 1, pending: 1, archived: 1, deleted: 1 };
 
   function cached() {
     var v;
@@ -1436,7 +1423,26 @@ window.__ccmFlags = (function () {
     return isNaN(v) ? 0 : v;
   }
 
-  function update() {
+  // The org uuid appears in many app-issued URLs (/api/organizations/<uuid>,
+  // /bootstrap/<uuid>). Harvest it from a request the app has already made, or
+  // from the page HTML as a fallback. Cached once found.
+  var orgUuid = null;
+  function findOrg() {
+    if (orgUuid) return orgUuid;
+    var RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    try {
+      var ents = performance.getEntriesByType('resource');
+      for (var i = 0; i < ents.length; i++) {
+        var m = ents[i].name.match(/(?:organizations|bootstrap)\/([0-9a-f-]{36})/i);
+        if (m) { orgUuid = m[1]; return orgUuid; }
+      }
+    } catch (e) {}
+    var h = (document.documentElement.innerHTML.match(RE) || [])[0];
+    if (h) orgUuid = h;
+    return orgUuid;
+  }
+
+  function paint() {
     var btn = document.querySelector('aside.dframe-sidebar [aria-label="Open sidebar"]')
            || document.querySelector('[aria-label="Open sidebar"]');
     if (!btn) return;
@@ -1447,13 +1453,8 @@ window.__ccmFlags = (function () {
       return;
     }
 
-    var live = countIdle();
-    if (live !== null) {
-      try { localStorage.setItem(KEY, String(live)); } catch (e) {}
-    }
-    var n = live !== null ? live : cached();
+    var n = cached();
     var label = n > 99 ? '99+' : String(n);
-
     var badge = btn.querySelector('.ccm-idle-badge');
     if (n > 0) {
       if (!badge) {
@@ -1467,16 +1468,52 @@ window.__ccmFlags = (function () {
     }
   }
 
+  // Fetch the session list and recompute the cached count. On any failure
+  // (no org yet, network, non-200, bad JSON) we leave the cache untouched so
+  // the badge keeps showing the last good number rather than blanking.
+  function refresh() {
+    var org = findOrg();
+    if (!org) return;
+    fetch('https://claude.ai/v1/sessions', {
+      credentials: 'include',
+      headers: {
+        'anthropic-organization-uuid': org,
+        'anthropic-client-platform': 'web_claude_ai',
+        'anthropic-version': '2023-06-01',
+      },
+    }).then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (j) {
+      if (!j) return;
+      var arr = Array.isArray(j) ? j : (j.sessions || j.data || j.results);
+      if (!Array.isArray(arr)) return;
+      var n = 0;
+      for (var i = 0; i < arr.length; i++) {
+        var st = arr[i] && arr[i].session_status;
+        if (st && !NOT_IDLE[st]) n++;
+      }
+      try { localStorage.setItem(KEY, String(n)); } catch (e) {}
+      paint();
+    }).catch(function () {});
+  }
+
   var pending = false;
   function schedule() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(function () { pending = false; update(); });
+    requestAnimationFrame(function () { pending = false; paint(); });
   }
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
   });
-  update();
+
+  paint();        // instant: show the cached count
+  refresh();      // then reconcile against the API
+  setInterval(refresh, POLL_MS);
+  window.addEventListener('focus', refresh);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') refresh();
+  });
 })();
 
 /* Root scroll-pin invariant (v1.59). The shared root cause behind the whole
