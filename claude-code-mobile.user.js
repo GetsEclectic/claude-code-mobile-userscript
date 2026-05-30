@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.67.0
+// @version      1.68.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1437,24 +1437,31 @@ window.__ccmFlags = (function () {
    lives behind GET https://claude.ai/v1/sessions, which returns every session
    with a session_status. We fetch that and count client-side.
 
-   What counts as "idle": session_status ALONE is unreliable — it gets stuck at
-   "running" after a turn finishes. Measured 2026-05-30: sessions whose turn had
-   clearly ended (Solver shadow / Session transcript / AdMob verdict) still
-   reported session_status:"running" while carrying a populated post_turn_summary
-   with status_category "review_ready". So the app's own per-session dot (and our
-   badge, when it trusted session_status) mislabelled finished sessions as active.
+   What counts as "idle": neither session_status NOR post_turn_summary is
+   sufficient alone.
+     - session_status was thought to stick at "running" after a turn ends, so
+       v1.65–1.67 stopped trusting it and switched to post_turn_summary.
+     - But post_turn_summary is STICKY across turns: the API populates it when a
+       turn ends and does NOT reliably clear it when the next turn starts on a
+       long-lived / background / autonomous session (Solver-shadow loops, PR-
+       webhook wakeups, /loop). So "PTS present => turn ended" (v1.67) marked
+       genuinely-working sessions as idle — the badge under-counted and the
+       active dot vanished. (Reported + reproduced 2026-05-30.)
 
-   The accurate signal is post_turn_summary. The API populates it the moment a
-   turn ENDS and clears it (null) when a new turn starts. So:
-     - post_turn_summary present  => last turn ended => WAITING ON BEN (idle),
-       regardless of a stale session_status:"running". Covers review_ready
-       (output ready), need_input / requires_action (asked a question), and
-       failed (errored out) — all "ball is in Ben's court".
-     - no post_turn_summary + session_status:"running" => GENUINELY WORKING.
-   We still drop archived / deleted / pending. Falling back to session_status
-   in {idle, requires_action} covers any session the API hands back without a
-   post_turn_summary field. This matches the human "sitting idle, waiting for
-   me" reading far better than the raw status enum did.
+   The reliable discriminator is updated_at FRESHNESS. Measured 2026-05-30 via
+   ccm_session_status_probe.py: every genuinely-working session had
+   session_status:"running" with updated_at within ~13s of now (it heartbeats
+   while a turn runs), several still carrying a stale review_ready / need_input
+   PTS from a PRIOR turn. Every genuinely-waiting session had
+   session_status:"idle" with updated_at >= ~70 min stale. A ~300x gap. So:
+     - session_status "running" AND updated_at fresh  => GENUINELY WORKING,
+       regardless of any lingering post_turn_summary. (The v1.67 miss.)
+     - otherwise post_turn_summary present  => last turn ended => WAITING ON BEN.
+       Covers review_ready, need_input / requires_action, failed — "ball in
+       Ben's court", including a session genuinely stuck at stale "running".
+     - session_status in {idle, requires_action}  => WAITING ON BEN.
+   We still drop archived / deleted / pending. This matches the human "sitting
+   idle, waiting for me" reading without hiding active background work.
 
    Headers: the endpoint 400s without anthropic-version and 404s without the
    org uuid. The org uuid is harvested from a URL the app has already fetched
@@ -1480,24 +1487,44 @@ window.__ccmFlags = (function () {
   var MKEY = 'ccmSessionStates';   // name -> 'ready' | 'awaiting' (override targets)
   // Put-away / placeholder statuses never count, regardless of turn state.
   var DROP = { pending: 1, archived: 1, deleted: 1 };
+  // Freshness window: a session that is actively running a turn bumps
+  // updated_at every few seconds (observed <=13s while working); the smallest
+  // genuinely-idle gap observed was ~70 min. 3 min sits ~20x below that floor
+  // with headroom for a long in-flight tool call that briefly stops bumping,
+  // and well above any client/server clock skew.
+  var FRESH_MS = 180000;
 
-  // Classify a session by what it actually wants from Ben, keyed off
-  // post_turn_summary rather than the stale session_status (see block comment):
-  //   'working'  — turn in progress (running, no post_turn_summary). Leave alone.
-  //   'awaiting'  — asked Ben something (requires_action / needs_action set).
+  function lastActive(s) {
+    var u = s && (s.updated_at || s.last_active_at || s.modified_at);
+    if (!u) return NaN;
+    var t = Date.parse(u);
+    return isNaN(t) ? NaN : t;
+  }
+  // True only when updated_at is present AND within the freshness window.
+  // Missing/unparseable timestamp → not fresh (don't claim activity we can't see).
+  function isFresh(s) {
+    var t = lastActive(s);
+    return !isNaN(t) && (Date.now() - t) < FRESH_MS;
+  }
+
+  // Classify a session by what it actually wants from Ben (see block comment):
+  //   'working'  — turn in progress: running + a FRESH updated_at. Leave alone.
+  //   'awaiting' — asked Ben something (requires_action / needs_action set).
   //   'ready'    — turn ended, output waiting (review_ready / failed / idle).
   //   null       — archived / deleted / pending / unknown. Ignore.
-  // 'working' is the ONLY state the app's "Running" dot is right about; 'ready'
-  // and 'awaiting' are the cases it stamps "Running" on by mistake.
+  // The freshness gate comes FIRST so a genuinely-running session is never
+  // mislabelled by a post_turn_summary that lingered from a prior turn — the
+  // v1.67 failure mode on background / autonomous sessions.
   function sessionState(s) {
     if (!s) return null;
     var st = s.session_status;
     if (DROP[st]) return null;
+    if (st === 'running' && isFresh(s)) return 'working';  // actively in a turn
     var pts = s.post_turn_summary ||
               (s.external_metadata && s.external_metadata.post_turn_summary);
     var needs = (pts && pts.needs_action) || '';
     if (st === 'requires_action' || needs) return 'awaiting';
-    if (pts) return 'ready';            // turn ended, nothing explicit needed
+    if (pts) return 'ready';            // turn ended (incl. stale-stuck running)
     if (st === 'idle') return 'ready';  // idle without a summary → still done
     return 'working';                   // running + no summary → genuinely busy
   }
