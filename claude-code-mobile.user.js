@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.55.0
+// @version      1.56.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -463,6 +463,23 @@ window.__ccmStyleEl = GM_addStyle(`
   aside[aria-label="Sidebar"] button[aria-label="More navigation items"],
   aside[aria-label="Sidebar"] button[data-ccm-hide-row] {
     display: none !important;
+  }
+
+  /* 22. Stock claude.ai/code puts `select-none` (user-select:none) on
+     .epitaxy-root, which cascades onto the Tiptap/ProseMirror composer even
+     though it's contenteditable. On Android Chrome the native text-selection
+     handles and the Copy/Cut/Paste action bar read -webkit-user-select
+     directly (independent of contenteditable), so with it computed to `none`
+     a long-press then Select all leaves a logical selection with NO visible
+     left handle and NO toolbar — the copy/cut buttons are unreachable. Force
+     the composer editable back to user-select:text so the native selection UI
+     paints. Reproduces with the script OFF (it's the app's own select-none), so
+     this is a workaround, not a regression fix. Scoped to the ProseMirror /
+     Prompt editable so the surrounding select-none on chrome is untouched. */
+  .ProseMirror[contenteditable="true"],
+  [aria-label="Prompt"][contenteditable="true"] {
+    -webkit-user-select: text !important;
+    user-select: text !important;
   }
 }
 `);
