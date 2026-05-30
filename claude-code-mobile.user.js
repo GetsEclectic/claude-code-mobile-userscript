@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.63.0
+// @version      1.64.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -495,6 +495,41 @@ window.__ccmStyleEl = GM_addStyle(`
     box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35) !important;
     z-index: 5 !important;
   }
+
+  /* 24. Steer cue for the re-wired action button. Mid-turn the bottom-right
+     control renders as the Stop square (□). The companion JS below re-wires it:
+     while a turn is streaming AND the composer holds text, a tap SENDS that text
+     as a steer (synthetic Enter on the composer) instead of stopping the turn —
+     so you can redirect a running turn without the Stop→retype→Send dance. When
+     that re-wire is armed the JS stamps data-ccm-steer on the Stop button; this
+     rule repaints it so the affordance matches the action: a distinct blue fill
+     (vs rule 17's coral) and an up-arrow (↑) overlaid in place of the stop glyph,
+     reading as "send" not "stop". When the composer is empty the attribute is
+     absent and the button stays the normal coral Stop — empty-composer taps still
+     stop the turn. position:relative anchors the ::after arrow; the inner glyph is
+     opacity:0'd (not display:none) so the button keeps its size. */
+  button[aria-label="Stop"][data-ccm-steer] {
+    position: relative !important;
+  }
+  button[aria-label="Stop"][data-ccm-steer] .btn-squish {
+    background: #2c84db !important;
+  }
+  button[aria-label="Stop"][data-ccm-steer] svg {
+    opacity: 0 !important;
+  }
+  button[aria-label="Stop"][data-ccm-steer]::after {
+    content: "↑";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+    pointer-events: none;
+  }
 }
 `);
 /* v1.46 bisect: ccmCss=0 removes the entire stylesheet (keeps companion JS),
@@ -524,6 +559,7 @@ window.__ccmFlags = (function () {
     unpan: f('ccmUnpan', true),         // gates window.scrollTo(_, sY + offsetTop)
     drawerSync: f('ccmDrawerSync', true), // gates ccm-drawer-open class toggle
     noKbOnSwitch: f('ccmNoKbOnSwitch', true), // gates keyboard-down-on-session-switch
+    steer: f('ccmSteer', true),         // gates the re-wired Stop->steer action button
   };
 })();
 
@@ -1645,4 +1681,109 @@ window.__ccmFlags = (function () {
     } catch (e) { /* fall through to native on any probe error */ }
     return origCollapse.apply(this, arguments);
   };
+})();
+
+/* Rule 24's companion — re-wire the mid-turn action button into a steer.
+   ("Steer" = send a message while a turn is still generating; the cloud Code
+   agent injects it at the next agent-loop yield, redirecting the running turn.)
+
+   THE PROBLEM. Mid-turn the bottom-right control renders as Stop (□). To steer
+   you'd have to Stop the turn, re-focus the composer, retype, and Send — losing
+   the turn. The native Send button is no help: while streaming it exists but is
+   BOTH disabled AND its React click-handler is gated, so even force-enabling and
+   clicking it never submits. (Empirically characterized in
+   scripts/ccm_live_driver.py: Send click is dead mid-turn; the only submit path
+   that fires mid-stream is an Enter keydown on the composer — and ProseMirror
+   does NOT gate on isTrusted, so a synthetic KeyboardEvent works just as well as
+   a real keypress. That's the lever this uses.)
+
+   THE FIX. Capture-phase click interceptor on window (same pattern as the
+   contextmenu block: fires before any React handler, registered at
+   document-start so it precedes the app's mount). When the tapped control is the
+   Stop button AND we're phone-width AND a turn is actually streaming AND the
+   composer holds text, we swallow the click (preventDefault +
+   stopImmediatePropagation, so the turn is NOT stopped) and instead dispatch a
+   synthetic Enter on the composer — submitting its text as a steer. When the
+   composer is empty we do nothing and let Stop work normally, so empty-composer
+   taps still stop the turn.
+
+   A 400ms cue loop stamps data-ccm-steer on the live Stop button whenever the
+   re-wire is armed (streaming + text + phone + flag), which rule 24 repaints
+   blue with an ↑ so the affordance tells the truth before you tap.
+
+   Gated by __ccmFlags.steer (localStorage.setItem('ccmSteer','0') to disable).
+   Streaming = a visible, enabled button[aria-label="Stop"] (mid-turn the DOM
+   carries both an enabled Stop and a disabled Send; Stop is the rendered one). */
+(function () {
+  var MQ = '(max-width: 900px)';
+  var COMPOSER = '[aria-label="Prompt"][contenteditable="true"], ' +
+                 '.tiptap.ProseMirror[contenteditable], ' +
+                 '.ProseMirror[contenteditable="true"]';
+
+  function onPhone() {
+    try { return window.matchMedia(MQ).matches; } catch (e) { return false; }
+  }
+  // The visible, enabled Stop button = a turn is streaming. Returns it or null.
+  function streamingBtn() {
+    var btns = document.querySelectorAll('button[aria-label="Stop"]');
+    for (var i = 0; i < btns.length; i++) {
+      var b = btns[i];
+      if (b.offsetParent !== null && !b.disabled) return b;
+    }
+    return null;
+  }
+  function composerEl() { return document.querySelector(COMPOSER); }
+  function composerText() {
+    var c = composerEl();
+    if (!c) return '';
+    return (c.innerText || '').replace(/ /g, ' ').trim();
+  }
+  function fireEnter(c) {
+    ['keydown', 'keypress', 'keyup'].forEach(function (type) {
+      c.dispatchEvent(new KeyboardEvent(type, {
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+        bubbles: true, cancelable: true,
+      }));
+    });
+  }
+
+  function onActivate(e) {
+    try {
+      if (!window.__ccmFlags || !window.__ccmFlags.steer) return;
+      if (!onPhone()) return;
+      var t = e.target;
+      var stop = t && t.closest && t.closest('button[aria-label="Stop"]');
+      if (!stop) return;
+      if (!streamingBtn()) return;      // not actually streaming — let it be
+      if (!composerText()) return;      // empty composer — let Stop stop the turn
+      var c = composerEl();
+      if (!c) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();     // React never sees the click -> no Stop
+      fireEnter(c);                     // submit composer text as a steer
+    } catch (err) { /* never break the native button on a probe error */ }
+  }
+  window.addEventListener('click', onActivate, true);
+
+  // Cue loop: stamp data-ccm-steer on the live Stop button when the re-wire is
+  // armed, clear it otherwise. Idempotent; cheap enough at 400ms.
+  function syncCue() {
+    try {
+      var armedBtn = null;
+      if (window.__ccmFlags && window.__ccmFlags.steer && onPhone()) {
+        var s = streamingBtn();
+        if (s && composerText()) armedBtn = s;
+      }
+      var btns = document.querySelectorAll('button[aria-label="Stop"]');
+      for (var i = 0; i < btns.length; i++) {
+        var b = btns[i];
+        if (b === armedBtn) {
+          if (!b.hasAttribute('data-ccm-steer')) b.setAttribute('data-ccm-steer', '');
+        } else if (b.hasAttribute('data-ccm-steer')) {
+          b.removeAttribute('data-ccm-steer');
+        }
+      }
+    } catch (e) { /* swallow */ }
+  }
+  setInterval(syncCue, 400);
 })();
