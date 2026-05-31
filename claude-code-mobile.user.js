@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.69.0
+// @version      1.71.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -545,6 +545,32 @@ window.__ccmStyleEl = GM_addStyle(`
     font-weight: 700;
     line-height: 1;
     pointer-events: none;
+  }
+
+  /* 25. Wider recents drawer + per-row idle-age label. The open drawer panel is
+     .dframe-sidebar-body; its width resolves from --df-sidebar-width, but that
+     var is set locally (not on .dframe-root), so overriding the var at the root
+     doesn't reach it (verified 2026-05-31: var flipped to 360 yet the panel
+     stayed 280). We instead override the panel's width directly — proven to take
+     it 280px -> 360px — with a 92vw cap so it never runs off a narrow phone. The
+     companion JS appends a .ccm-idle-age <span> to each idle row's main button
+     (right of the flex-1 title) showing how long the session has been idle
+     (humanized from updated_at); it's muted and shrink-proof so the title
+     truncates first. */
+  .dframe-sidebar-body {
+    width: 360px !important;
+    max-width: 92vw !important;
+  }
+  [data-row-main-button] .ccm-idle-age {
+    flex: 0 0 auto !important;
+    margin-left: auto !important;
+    padding-left: 8px !important;
+    font-size: 12px !important;
+    font-variant-numeric: tabular-nums !important;
+    color: var(--text-300, #9b9b9b) !important;
+    opacity: 0.8 !important;
+    white-space: nowrap !important;
+    pointer-events: none !important;
   }
 }
 `);
@@ -1463,6 +1489,18 @@ window.__ccmFlags = (function () {
    We still drop archived / deleted / pending. This matches the human "sitting
    idle, waiting for me" reading without hiding active background work.
 
+   v1.70 — background-work proxy. The stock UI shows an "N background tasks
+   running" indicator, but it is computed CLIENT-SIDE by replaying the per-
+   session event log (/v1/sessions/<id>/events, ~780KB each); neither the
+   session LIST nor the session DETAIL exposes a task count (verified 2026-05-31
+   via ccm_bg_process_probe.py / ccm_bg_events_probe.py). Per-session event
+   fetches across the recents list would cost multiple MB per 45s poll on the
+   phone, so instead we use connection_status as a free stand-in: a running
+   background task is exactly what keeps a session's container alive, so a
+   "connected" session that isn't explicitly awaiting Ben is treated as WORKING
+   (not idle). Imperfect — a session connected only because it just finished
+   also reads as working — but zero extra network. (Ben's call 2026-05-31.)
+
    Headers: the endpoint 400s without anthropic-version and 404s without the
    org uuid. The org uuid is harvested from a URL the app has already fetched
    (performance resource entries / page HTML); anthropic-version is the public
@@ -1485,6 +1523,7 @@ window.__ccmFlags = (function () {
   var POLL_MS = 45000;
   var KEY = 'ccmIdleCount';
   var MKEY = 'ccmSessionStates';   // name -> 'ready' | 'awaiting' (override targets)
+  var AKEY = 'ccmSessionAges';     // name -> updated_at epoch ms (idle-age labels)
   // Put-away / placeholder statuses never count, regardless of turn state.
   var DROP = { pending: 1, archived: 1, deleted: 1 };
   // Freshness window: a session that is actively running a turn bumps
@@ -1523,10 +1562,22 @@ window.__ccmFlags = (function () {
     var pts = s.post_turn_summary ||
               (s.external_metadata && s.external_metadata.post_turn_summary);
     var needs = (pts && pts.needs_action) || '';
+    // A turn that explicitly asked Ben something always wins — even over a live
+    // connection. The ball is in his court, so it stays awaiting (yellow).
     if (st === 'requires_action' || needs) return 'awaiting';
-    if (pts) return 'ready';            // turn ended (incl. stale-stuck running)
-    if (st === 'idle') return 'ready';  // idle without a summary → still done
-    return 'working';                   // running + no summary → genuinely busy
+    // Background-work proxy (v1.70). The stock "N background tasks running"
+    // indicator is computed client-side by replaying /v1/sessions/<id>/events
+    // (~780KB per session); NEITHER the session list NOR the session detail
+    // carries a per-session task count (verified 2026-05-31). A running
+    // background task is exactly what keeps a session's container alive, so
+    // connection_status:"connected" is the free stand-in for "has live work" —
+    // treat a connected, non-awaiting session as working rather than idle.
+    // (Ben's call 2026-05-31, chosen over true per-session event counting to
+    // avoid multi-MB polls on the phone.)
+    if (s.connection_status === 'connected') return 'working';
+    if (pts) return 'ready';            // disconnected + turn ended
+    if (st === 'idle') return 'ready';  // disconnected idle
+    return 'working';                   // disconnected running + no summary
   }
 
   // A session is "waiting on Ben" (counts toward the idle badge) when its turn
@@ -1605,35 +1656,108 @@ window.__ccmFlags = (function () {
     try { return JSON.parse(localStorage.getItem(MKEY)) || {}; }
     catch (e) { return {}; }
   }
+  function agesCached() {
+    try { return JSON.parse(localStorage.getItem(AKEY)) || {}; }
+    catch (e) { return {}; }
+  }
+  // Humanize an idle duration: minutes under an hour, then hours, then days.
+  // Ben asked specifically for "minutes idle"; minutes is the primary unit and
+  // we roll up to h/d only so a days-old session doesn't read as e.g. "5760m".
+  function humanizeAge(ms) {
+    var m = Math.floor(ms / 60000);
+    if (m < 1) return '<1m';
+    if (m < 60) return m + 'm';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + 'h';
+    return Math.floor(h / 24) + 'd';
+  }
 
-  // Correct the app's per-session status dots in the recents list. The app
-  // renders an animated triple-dot "Running" indicator straight off the stale
-  // session_status, so a session whose turn has actually ended still shows
-  // "Running". For every such row whose true state (from the cached map) is
-  // ready/awaiting, swap in the app's OWN status-dot markup (data-kind picks up
-  // the app's colour) and fix the aria-label. We only ever downgrade a
-  // "Running" dot — genuinely-working rows (state 'working', not in the map)
-  // and rows the app already shows as Ready/Awaiting are left untouched.
-  //
-  // Idempotent: once swapped the span no longer holds a .dframe-dot, so it
-  // won't re-match. When the app re-renders the row back to "Running", the
-  // MutationObserver re-applies. (A session that resumes work shows a stale
-  // override for at most one POLL_MS until the next refresh drops it from the
-  // map — acceptable for a glance-level dot.)
+  // The exact markup the app draws for each dot state (captured live via
+  // ccm_drawer_dots_probe.py), so an injected dot is byte-identical to the
+  // native ones — animation and colour come from the app's own global classes
+  // (.dframe-dot, .status-dot[data-kind]).
+  var DOT = {
+    working: { aria: 'Running',
+      html: '<span class="inline-flex size-3 items-center justify-center gap-[2px] leading-none" aria-hidden="true">' +
+            '<span class="dframe-dot"></span><span class="dframe-dot"></span><span class="dframe-dot"></span></span>' },
+    ready:    { aria: 'Ready',          html: '<span class="status-dot" data-kind="ready"></span>' },
+    awaiting: { aria: 'Awaiting input', html: '<span class="status-dot" data-kind="awaiting"></span>' },
+  };
+  // Which state is a status span currently rendering?
+  function dotState(el) {
+    if (el.querySelector('.dframe-dot')) return 'working';
+    var sd = el.querySelector('.status-dot');
+    if (sd) {
+      var k = sd.getAttribute('data-kind');
+      if (k === 'awaiting' || k === 'ready') return k;
+    }
+    return null;
+  }
+  // Reconcile each recents status dot to the session's TRUE state (cached map).
+  // Bidirectional: we DOWNGRADE a stale "Running" dot to ready/awaiting when a
+  // turn has actually ended, and UPGRADE an idle/ready dot to "Running" when the
+  // connected-proxy says the session has live background work. Idempotent — we
+  // only rewrite when the rendered state differs from the desired one, so we
+  // never fight a correct app dot or restart its running animation.
   function paintDots() {
     if (!window.matchMedia(MQ).matches) return;   // phone sheet only
     var map = statesCached();
     var dots = document.querySelectorAll('span[role="status"]');
     for (var i = 0; i < dots.length; i++) {
       var el = dots[i];
-      if (!el.querySelector('.dframe-dot')) continue;  // not the "Running" dot
+      var name = rowName(el);
+      if (!name) continue;                  // sr-only / unlabelled status spans
+      var want = map[name];
+      if (!want || !DOT[want]) continue;    // no opinion on this session
+      if (dotState(el) === want) continue;  // already correct
+      el.setAttribute('aria-label', DOT[want].aria);
+      el.innerHTML = DOT[want].html;
+    }
+  }
+
+  // The status span sits inside the row's main button (in the leading slot), so
+  // climbing from the dot reaches the button — where the idle-age label hangs,
+  // right of the flex-1 title. Handles both "the button is an ancestor" and
+  // "the button is a descendant of a row ancestor" shapes defensively.
+  function rowMainButton(statusEl) {
+    var n = statusEl;
+    for (var d = 0; d < 6 && n; d++, n = n.parentElement) {
+      if (n.hasAttribute && n.hasAttribute('data-row-main-button')) return n;
+      var b = n.querySelector && n.querySelector('[data-row-main-button]');
+      if (b) return b;
+    }
+    return null;
+  }
+  // Stamp each waiting (ready/awaiting) recents row with how long it's been idle,
+  // computed live from the cached updated_at so it ticks up between refreshes.
+  // Working rows (and any without a known timestamp) get no label, and a row
+  // that transitions back to working has its stale label removed. Idempotent:
+  // we only touch the DOM when the text actually changes.
+  function paintAges() {
+    if (!window.matchMedia(MQ).matches) return;   // phone sheet only
+    var map = statesCached();
+    var ages = agesCached();
+    var dots = document.querySelectorAll('span[role="status"]');
+    for (var i = 0; i < dots.length; i++) {
+      var el = dots[i];
       var name = rowName(el);
       if (!name) continue;
+      var btn = rowMainButton(el);
+      if (!btn) continue;
+      var lbl = btn.querySelector('.ccm-idle-age');
       var state = map[name];
-      if (state !== 'ready' && state !== 'awaiting') continue;
-      el.setAttribute('aria-label', state === 'awaiting' ? 'Awaiting input' : 'Ready');
-      el.innerHTML = '<span class="status-dot" data-kind="' +
-        (state === 'awaiting' ? 'awaiting' : 'ready') + '"></span>';
+      var ts = ages[name];
+      if ((state === 'ready' || state === 'awaiting') && ts) {
+        var text = humanizeAge(Date.now() - ts);
+        if (!lbl) {
+          lbl = document.createElement('span');
+          lbl.className = 'ccm-idle-age';
+          btn.appendChild(lbl);
+        }
+        if (lbl.textContent !== text) lbl.textContent = text;
+      } else if (lbl) {
+        lbl.remove();
+      }
     }
   }
 
@@ -1658,19 +1782,26 @@ window.__ccmFlags = (function () {
       if (!Array.isArray(arr)) return;
       var n = 0;
       var map = {};
+      var ages = {};
       for (var i = 0; i < arr.length; i++) {
         var s = arr[i];
         if (isWaiting(s)) n++;
         var state = sessionState(s);
         var nm = s && (s.name || s.title || s.session_name);
-        // Only record the states we override (ready/awaiting); 'working' and
-        // null stay out of the map so those dots are left as the app drew them.
-        if (nm && (state === 'ready' || state === 'awaiting')) map[nm] = state;
+        // Record every actionable state (working/ready/awaiting) so paintDots
+        // can both upgrade and downgrade. null (archived/deleted/pending) stays
+        // out of the map so those rows are left exactly as the app drew them.
+        if (nm && DOT[state]) map[nm] = state;
+        // Cache the last-active timestamp so paintAges can show a live idle age.
+        var ts = lastActive(s);
+        if (nm && !isNaN(ts)) ages[nm] = ts;
       }
       try { localStorage.setItem(KEY, String(n)); } catch (e) {}
       try { localStorage.setItem(MKEY, JSON.stringify(map)); } catch (e) {}
+      try { localStorage.setItem(AKEY, JSON.stringify(ages)); } catch (e) {}
       paint();
       paintDots();
+      paintAges();
     }).catch(function () {});
   }
 
@@ -1678,7 +1809,7 @@ window.__ccmFlags = (function () {
   function schedule() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(function () { pending = false; paint(); paintDots(); });
+    requestAnimationFrame(function () { pending = false; paint(); paintDots(); paintAges(); });
   }
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
@@ -1686,6 +1817,7 @@ window.__ccmFlags = (function () {
 
   paint();        // instant: show the cached count
   paintDots();    // instant: fix dots from the cached map
+  paintAges();    // instant: stamp idle ages from the cached timestamps
   refresh();      // then reconcile against the API
   setInterval(refresh, POLL_MS);
   window.addEventListener('focus', refresh);
