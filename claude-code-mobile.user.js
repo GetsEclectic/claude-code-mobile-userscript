@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.71.0
+// @version      1.72.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -479,6 +479,22 @@ window.__ccmStyleEl = GM_addStyle(`
   .epitaxy-approval-card {
     max-height: 40vh !important;
     overflow-y: auto !important;
+  }
+  /* 22b. Capping the card at 40vh (rule 22) turns it into a height-constrained
+     flex column. Its flex children (the question title, the options list, the
+     footer) then have room to SHRINK below their content height — and the title
+     is a flex item whose text overflows visibly. The result on real Android
+     (Ben's 2026-05-31 screenshot): the title collapses toward zero height, the
+     option rows lay out from the top of the card as if the title took no space,
+     and the bold title text paints DOWN over the first option cards. This is a
+     pure flex-shrink collapse, not a sticky/absolute/paint issue — it only
+     appears because rule 22 constrains the height. Fix: forbid the card's direct
+     children from shrinking and restore their auto min-height, so each keeps its
+     full content height and the card (overflow-y:auto) scrolls instead of
+     letting items overlap. */
+  .epitaxy-approval-card > * {
+    flex-shrink: 0 !important;
+    min-height: auto !important;
   }
 
   /* 23. Idle-session count badge on the top-left menu (sidebar toggle). The
