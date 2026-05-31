@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.72.0
+// @version      1.73.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -407,6 +407,14 @@ window.__ccmStyleEl = GM_addStyle(`
     bottom: -12px !important;
     left: -8px !important;
     right: 0 !important;
+  }
+  /* 18b. Hide React's REAL "+" in the bottom toolbar. The companion script no
+     longer moves it (that broke on soft-nav / the Accept-edits toggle); instead it
+     stays put for React to own, and we surface a proxy "+" in the input row. Tag
+     the real one (data-ccm-realadd) and hide it so only the proxy shows. The proxy
+     forwards clicks to it, so the attach handler still fires from the real node. */
+  button[aria-label="Add"][data-ccm-realadd]:not([data-ccm-proxy]) {
+    display: none !important;
   }
   /* Even with the box shrunk to 28px, a visible gap remained between the + and
      the composer text. That leftover is the text field's own left inset (now
@@ -1101,84 +1109,79 @@ window.__ccmFlags = (function () {
   sync();
 })();
 
-/* Companion to rule 18. Relocate the composer "+" (the Add / attach button)
-   from the bottom toolbar row up INTO the composer input row, inline to the left
-   of the textarea. This can't be done in CSS: the "+" lives in a separate
-   sibling row (.epitaxy-chat-column > the py-[4px] toolbar, alongside the
-   permission-mode toggle and model selector) from the input box, and CSS
-   reordering can't move a node across containers. So move the node itself —
-   insert it as the first child of the input row (.epitaxy-prompt's
-   div.relative.flex.w-full, whose other children are the flex-1 text input and
-   the .self-end Send button). flex-1 on the input then shoves the textarea over
-   to make room, which is the "push the textarea over" behaviour we want.
+/* Companion to rule 18. Visually place the composer "+" (Add / attach) at the
+   LEFT of the textarea, inside the input row — WITHOUT moving React's own node.
 
-   The app is React and owns these nodes, re-rendering the composer on state
-   changes (typing, permission-mode / model toggles, send). A MutationObserver
-   re-asserts the move whenever a re-render puts the button back in the toolbar.
-   relocate() is a no-op once the button is already first child, so the observer
-   settles instead of looping, and it is wrapped so a reconciliation race can
-   never throw out of our handler into the page.
+   Why not move the node (the old approach): the "+" lives in a separate sibling
+   row from the input box, so CSS can't reorder it across containers, and the old
+   companion physically reparented React's button into the input row. That desynced
+   React's fiber tree from the live DOM, which had two failure modes:
+     (a) tapping the sibling "Accept edits" toggle re-rendered the toolbar and
+         React referenced the moved "+" as an insertion ref in a parent it no
+         longer lived in -> "NotFoundError" -> error boundary (trc rpvf1t); and
+     (b) soft-navigating to another session unmounted/remounted the composer and
+         React lost the moved node entirely -> the "+" VANISHED and never came
+         back (trc 1dym2c, "the + disappears when I switch sessions"). Verified on
+         redroid: with the node moved, addCount goes 1 -> 0 across a real soft-nav
+         and does not self-heal, under every prototype-override variant tried.
 
-   REACT-SAFETY GUARD (trc claude-cloud-bootstrap-rpvf1t). Wrapping relocate() in
-   try/catch only stops OUR handler from throwing — it does nothing about React's
-   OWN later reconciliation of the toolbar we stole the "+" from. The "+" and the
-   "Accept edits" permission-mode toggle are direct siblings; tapping the toggle
-   re-renders that toolbar, and React's commit calls
-   toolbar.insertBefore(node, plus) using the relocated "+" as the reference
-   child — but it no longer lives there, so the native call throws
-   "NotFoundError: ... not a child of this node" and the app's error boundary
-   shows "Something went wrong". Confirmed empirically:
-   scripts/ccm_accept_edits_repro.py reproduces three such throws + the error
-   boundary WITH this script and none without.
-
-   Fix: defang it surgically. Tag only our relocated "+" (plus.__ccmRelocated)
-   and make insertBefore / removeChild treat THAT ONE node as a no-op when React
-   operates on a parent it no longer belongs to. Every other node, and every
-   normal call, keeps exact native behaviour — the blast radius is the single
-   button we moved. */
+   The robust fix: leave React's real "+" exactly where React puts it (the bottom
+   toolbar) so React keeps full ownership — neither failure can occur. We just (1)
+   hide the real toolbar "+" via CSS (rule 18b) and (2) inject OUR OWN proxy button
+   as the first child of the input row; tapping the proxy forwards .click() to the
+   real button so the app's attach handler fires normally. If React ever removes
+   our proxy during reconciliation we simply re-create it (self-healing, and since
+   React never tracked it, removing a foreign node can't throw). */
 (function () {
-  var origInsert = Node.prototype.insertBefore;
-  Node.prototype.insertBefore = function (newNode, refNode) {
-    if (refNode && refNode.__ccmRelocated && refNode.parentNode !== this) {
-      // React used our relocated "+" as an insertion reference in a parent it no
-      // longer lives in. Append instead of throwing so reconciliation survives.
-      return origInsert.call(this, newNode, null);
+  var PROXY_ID = 'ccm-add-proxy';
+  function realAdd() {
+    var all = document.querySelectorAll('button[aria-label="Add"]');
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].id !== PROXY_ID && !all[i].hasAttribute('data-ccm-proxy')) return all[i];
     }
-    return origInsert.call(this, newNode, refNode);
-  };
-  var origRemove = Node.prototype.removeChild;
-  Node.prototype.removeChild = function (child) {
-    if (child && child.__ccmRelocated && child.parentNode !== this) {
-      // React is unmounting the old toolbar and trying to remove the "+" from it,
-      // but we already moved it out; the DOM is in the desired state, so no-op.
-      return child;
-    }
-    return origRemove.call(this, child);
-  };
-})();
-(function () {
-  function relocate() {
+    return null;
+  }
+  function sync() {
     try {
       var input = document.querySelector('.epitaxy-prompt-input');
-      var plus = document.querySelector('button[aria-label="Add"]');
-      if (!input || !plus) return;
-      var row = input.parentElement; // div.relative.flex.w-full
-      if (!row) return;
-      plus.__ccmRelocated = true; // arm the react-safety guard above for this node
-      if (plus.parentElement === row && row.firstElementChild === plus) return;
-      row.insertBefore(plus, row.firstChild);
+      var row = input && input.parentElement; // div.relative.flex.w-full
+      var real = realAdd();
+      var proxy = document.getElementById(PROXY_ID);
+      if (!input || !row || !real) {
+        if (proxy) proxy.remove(); // no composer right now — drop a stale proxy
+        return;
+      }
+      real.setAttribute('data-ccm-realadd', '1'); // rule 18b hides this toolbar one
+      if (!proxy) {
+        proxy = document.createElement('button');
+        proxy.id = PROXY_ID;
+        proxy.type = 'button';
+        proxy.setAttribute('data-ccm-proxy', '1');
+        proxy.setAttribute('aria-label', 'Add'); // inherits rule-18 sizing/hit-slop
+        proxy.tabIndex = -1;
+        proxy.innerHTML = real.innerHTML; // copy the "+" glyph/svg
+        proxy.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var r = realAdd();
+          if (r) r.click(); // fires the app's React onClick -> attach menu
+        });
+      } else if (proxy.childElementCount === 0 && real.innerHTML) {
+        proxy.innerHTML = real.innerHTML; // keep the glyph in sync if it changed
+      }
+      if (row.firstElementChild !== proxy) row.insertBefore(proxy, row.firstChild);
     } catch (e) { /* never let a reconciliation race break the composer */ }
   }
   var pending = false;
   function schedule() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(function () { pending = false; relocate(); });
+    requestAnimationFrame(function () { pending = false; sync(); });
   }
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
   });
-  relocate();
+  sync();
 })();
 
 /* Dismiss the sidebar drawer after a nav-row tap (mobile only).
