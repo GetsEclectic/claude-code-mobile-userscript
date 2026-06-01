@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.74.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons metadata-only telemetry (errors, failed fetches, error-boundary text, low-rate layout heartbeats) to a private ntfy topic so issues can be diagnosed after the fact.
+// @version      1.76.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons END-TO-END ENCRYPTED diagnostics (errors, failed fetches/XHR, error-boundary signals, layout + network history) to a private ntfy topic — only the VPS private key can decrypt, so any PII in the stream stays protected in transit and at rest.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -666,7 +666,14 @@ window.__ccmFlags = (function () {
 (function () {
   var ENDPOINT = 'https://ntfy.k4yapp.com/ccm-telemetry';
   var TOKEN = 'tk_tkd7gmehrj9vch6ev7k0ivlohiga5'; // write-only → ccm-telemetry
-  var VER = '1.74.0';
+  var VER = '1.76.0';
+  // Recipient public key (P-256, X9.62 uncompressed point, base64). The private
+  // key lives only on the VPS (~/.config/ccm-telemetry/telem_ec_private.pem). This
+  // script is PUBLIC, so the whole beacon body is end-to-end encrypted to this key
+  // (ECDH→HKDF-SHA256→AES-256-GCM, ECIES). Even though everything here is visible,
+  // nobody but the holder of the private key can read a beacon. We assume PII WILL
+  // appear in telemetry and secure the channel rather than try to scrub the source.
+  var PUBKEY_B64 = 'BPdmkCCeVTK1V1eXCCzXbNqDr6+dal6V5dTRJJDjWvOyHYD5v7dvDdC32vjl+dgJIxihXY5UWZH+vOemMBJV0us=';
   try { if (localStorage.getItem('ccmTelemOff') === '1') return; } catch (e) {}
   if (typeof GM_xmlhttpRequest !== 'function') return; // grant missing → no-op
 
@@ -679,6 +686,48 @@ window.__ccmFlags = (function () {
 
   function path() { try { return location.pathname; } catch (e) { return '?'; } }
   function clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) : s; }
+
+  // --- End-to-end encryption (ECIES: ECDH P-256 → HKDF-SHA256 → AES-256-GCM) ---
+  // Params MUST match the Python decryptor in bin/ccm-telemetry exactly.
+  var subtle = (window.crypto && window.crypto.subtle) || null;
+  function b64(buf) {
+    var bytes = new Uint8Array(buf), s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  }
+  function fromB64(str) {
+    var bin = atob(str), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  // Encrypt a plaintext string to the recipient pubkey; resolves to {v,epk,iv,ct}.
+  function encryptBeacon(plaintext) {
+    var enc = new TextEncoder();
+    return subtle.importKey('raw', fromB64(PUBKEY_B64),
+      { name: 'ECDH', namedCurve: 'P-256' }, false, []).then(function (recipPub) {
+      return subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits'])
+        .then(function (eph) {
+        return subtle.deriveBits({ name: 'ECDH', public: recipPub }, eph.privateKey, 256)
+          .then(function (sharedBits) {
+          return subtle.importKey('raw', sharedBits, { name: 'HKDF' }, false, ['deriveKey']);
+        }).then(function (hkdfKey) {
+          return subtle.deriveKey(
+            { name: 'HKDF', hash: 'SHA-256',
+              salt: enc.encode('ccm-telem-salt-v1'),
+              info: enc.encode('ccm-telemetry-v1') },
+            hkdfKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+        }).then(function (aesKey) {
+          var iv = window.crypto.getRandomValues(new Uint8Array(12));
+          return subtle.encrypt({ name: 'AES-GCM', iv: iv }, aesKey, enc.encode(plaintext))
+            .then(function (ct) {
+            return subtle.exportKey('raw', eph.publicKey).then(function (epk) {
+              return { v: 1, epk: b64(epk), iv: b64(iv), ct: b64(ct) };
+            });
+          });
+        });
+      });
+    });
+  }
 
   // Compact, content-free layout snapshot — the heartbeat unit.
   function state() {
@@ -704,6 +753,20 @@ window.__ccmFlags = (function () {
     ring.push(s); if (ring.length > RING_MAX) ring.shift();
   }
 
+  // Recent network requests — pathname + status ONLY, never bodies or query
+  // (query can hold prompt content). Attached to every beacon so a boundary
+  // shows which request(s) backed the failure. This is what diagnoses "Sidebar
+  // failed to load" when it's a 200-with-error or an XHR that fetch-wrapping
+  // alone can't see.
+  var netRing = [], NET_MAX = 10;
+  function epOf(url) {
+    try { return new URL(url, location.href).pathname; } catch (e) { return clip(url, 80); }
+  }
+  function pushNet(m, ep, st) {
+    netRing.push({ m: m, ep: ep, st: st, t: Date.now() });
+    if (netRing.length > NET_MAX) netRing.shift();
+  }
+
   // Outbound rate guard + per-signature dedupe so a render loop can't flood.
   var sent = 0, windowStart = Date.now(), MAX_PER_MIN = 20;
   var seen = {}; // signature -> last-sent ms
@@ -715,26 +778,46 @@ window.__ccmFlags = (function () {
     sent++; return true;
   }
 
+  // Low-level POST of an already-serialized envelope string.
+  function send(payload, kind) {
+    try {
+      GM_xmlhttpRequest({
+        method: 'POST', url: ENDPOINT, data: payload,
+        headers: { 'Authorization': 'Bearer ' + TOKEN, 'X-Title': 'ccm:' + kind },
+        timeout: 8000,
+        onerror: function () {}, ontimeout: function () {},
+      });
+    } catch (e) {}
+  }
+
   function beacon(kind, data, sig) {
     if (!allow(sig)) return;
-    var body;
+    var plaintext;
     try {
-      body = JSON.stringify({
+      plaintext = JSON.stringify({
         k: kind, cid: cid, ver: VER, p: path(),
         ua: clip(navigator.userAgent, 180),
         ts: new Date().toISOString(),
         d: data || null,
         hist: ring.slice(-3),
+        net: netRing.slice(-6),
       });
     } catch (e) { return; }
-    if (body.length > 3800) body = body.slice(0, 3800); // stay under ntfy 4k
+    // Cap plaintext so the base64 envelope (~1.4x + overhead) stays under ntfy's
+    // 4k message limit; truncation only ever loses trailing context, never breaks
+    // decryption since the whole string is one AES-GCM blob.
+    if (plaintext.length > 2600) plaintext = plaintext.slice(0, 2600);
+    // No WebCrypto → never fall back to plaintext (the channel is public). Emit a
+    // tiny content-free marker so we can still see a device is alive but unencryptable.
+    if (!subtle) {
+      send(JSON.stringify({ v: 0, nocrypto: 1, cid: cid, ver: VER, k: kind,
+        ts: new Date().toISOString() }), kind);
+      return;
+    }
     try {
-      GM_xmlhttpRequest({
-        method: 'POST', url: ENDPOINT, data: body,
-        headers: { 'Authorization': 'Bearer ' + TOKEN, 'X-Title': 'ccm:' + kind },
-        timeout: 8000,
-        onerror: function () {}, ontimeout: function () {},
-      });
+      encryptBeacon(plaintext).then(function (env) {
+        send(JSON.stringify(env), kind);
+      }, function () { /* drop on crypto failure — never send plaintext */ });
     } catch (e) {}
   }
   window.__ccmTelem = beacon; // let other modules report intentional events
@@ -796,13 +879,19 @@ window.__ccmFlags = (function () {
         var p = origFetch.apply(this, arguments);
         try {
           var url = (typeof input === 'string') ? input : (input && input.url) || '';
-          var u; try { u = new URL(url, location.href); } catch (e) { u = null; }
-          var ep = u ? u.pathname : clip(url, 120); // drop query (may hold content)
+          var ep = epOf(url); // pathname only — drop query (may hold content)
           var method = (init && init.method) || (input && input.method) || 'GET';
           p.then(function (res) {
-            try { if (res && !res.ok) beacon('fetchfail', { m: method, ep: ep, st: res.status }, 'ff:' + ep + res.status); } catch (e) {}
+            try {
+              var st = res ? res.status : 0;
+              pushNet(method, ep, st);
+              if (res && !res.ok) beacon('fetchfail', { m: method, ep: ep, st: st }, 'ff:' + ep + st);
+            } catch (e) {}
           }, function (err) {
-            try { beacon('fetcherr', { m: method, ep: ep, msg: clip(err && err.message, 200) }, 'fe:' + ep); } catch (e) {}
+            try {
+              pushNet(method, ep, 'ERR');
+              beacon('fetcherr', { m: method, ep: ep, msg: clip(err && err.message, 200) }, 'fe:' + ep);
+            } catch (e) {}
           });
         } catch (e) {}
         return p; // never alter what the app sees
@@ -810,17 +899,54 @@ window.__ccmFlags = (function () {
     }
   } catch (e) {}
 
+  // 4b. XMLHttpRequest — the sidebar's session-list load may use XHR, which the
+  //     fetch wrapper can't see (v1.74.0's blind spot: a boundary fired with NO
+  //     network beacon, meaning the failing request wasn't fetch-or-non-2xx).
+  //     Capture method + pathname + status only — never request/response bodies.
+  try {
+    var XP = XMLHttpRequest.prototype;
+    var origOpen = XP.open, origSend = XP.send;
+    XP.open = function (method, url) {
+      try { this.__ccmM = method || 'GET'; this.__ccmEp = epOf(url); } catch (e) {}
+      return origOpen.apply(this, arguments);
+    };
+    XP.send = function () {
+      var self = this;
+      try {
+        self.addEventListener('loadend', function () {
+          try {
+            var st = self.status;
+            pushNet(self.__ccmM || 'GET', self.__ccmEp || '?', st || 'ERR');
+            if (!st || st >= 400) beacon('xhrfail', { m: self.__ccmM, ep: self.__ccmEp, st: st || 0 }, 'xf:' + self.__ccmEp + st);
+          } catch (e) {}
+        });
+      } catch (e) {}
+      return origSend.apply(this, arguments);
+    };
+  } catch (e) {}
+
   // 5. Error-boundary text watcher — the most direct signal for the sidebar
   //    bug. When a "failed to load" / "Try again" fallback paints, beacon the
   //    label once (deduped). Cheap: only scans subtrees that actually changed.
+  // PRIVACY-CRITICAL: this must fire ONLY on real error-boundary fallbacks, not
+  // on chat content that happens to contain trigger words (v1.74.0 leaked a
+  // typed message that contained "sidebar failed to load" — fixed here). Guards:
+  //   • the changed subtree is tiny (boundaries are ~30 chars; messages aren't),
+  //   • it contains an actual retry BUTTON whose own label is "Try again/Reload"
+  //     (chat prose never does), and
+  //   • we beacon ONLY a canonical label from a fixed allowlist — never the
+  //     node's raw textContent — so even a heuristic miss can't emit user text.
+  var BOUNDARY_LABELS = /failed to load|something went wrong|couldn'?t load|unable to load|error loading/i;
   function scanText(root) {
     try {
-      if (!root || !root.textContent) return;
-      var tc = root.textContent;
-      if (/failed to load|something went wrong|try again/i.test(tc) && tc.length < 400) {
-        beacon('boundary', { text: clip(tc.replace(/\s+/g, ' ').trim(), 200) },
-          'bnd:' + clip(tc, 60));
-      }
+      if (!root || root.nodeType !== 1 || !root.querySelector) return;
+      var tc = root.textContent || '';
+      if (tc.length > 120) return;                 // real fallbacks are tiny
+      var btn = root.querySelector('button, [role="button"]');
+      if (!btn || !/try again|reload|retry/i.test(btn.textContent || '')) return;
+      var m = tc.match(BOUNDARY_LABELS);
+      var label = m ? m[0].toLowerCase() : 'error boundary';
+      beacon('boundary', { label: label }, 'bnd:' + label);
     } catch (e) {}
   }
   try {
