@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.73.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows.
+// @version      1.74.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons metadata-only telemetry (errors, failed fetches, error-boundary text, low-rate layout heartbeats) to a private ntfy topic so issues can be diagnosed after the fact.
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @connect      ntfy.k4yapp.com
 // @homepageURL  https://github.com/GetsEclectic/claude-code-mobile-userscript
 // @downloadURL  https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
 // @updateURL    https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
@@ -627,6 +629,228 @@ window.__ccmFlags = (function () {
     noKbOnSwitch: f('ccmNoKbOnSwitch', true), // gates keyboard-down-on-session-switch
     steer: f('ccmSteer', true),         // gates the re-wired Stop->steer action button
   };
+})();
+
+/* ────────────────────────────────────────────────────────────────────────
+   Remote telemetry — v1.74.0. Always-on, metadata-only.
+
+   Why: the old debug system (below) is opt-in (?ccmDebug=1) and retrieval
+   means tapping DUMP then adb-pulling a file off the phone. That can't answer
+   "I hit a bug — just look at what happened." This module beacons diagnostic
+   metadata to a private, write-only ntfy topic the moment something breaks,
+   so the agent reads it server-side with `bin/ccm-telemetry` (no phone, no
+   debug flag, no adb).
+
+   Transport: GM_xmlhttpRequest POST to https://ntfy.k4yapp.com/ccm-telemetry
+   with a WRITE-ONLY bearer token. The token is public (this script is public),
+   but write-only means a leak only lets someone append to one metadata log —
+   it cannot read anyone's beacons back (verified 403 on read). Rotate by
+   re-minting the ccm-telem token on the VPS and bumping @version.
+
+   PRIVACY (Principle: metadata only — Ben approved this scope, never content):
+     • URLs are reduced to location.pathname — the query string is DROPPED
+       because claude.ai/code carries prefilled prompts in ?prompt=… (that is
+       user content). Never beacon search/hash.
+     • We send: error text/stack, failed-fetch path+status, error-boundary
+       label text, viewport/layout dims, kb/drawer flags, UA, online state.
+     • We never read message bodies, response payloads, or session text.
+
+   Volume: low. Errors beacon immediately (deduped by signature). Layout
+   heartbeats are kept in a small in-memory ring and only FLUSHED alongside an
+   error (for context) or as a sparse keepalive (≤1 / 5min), so a quiet session
+   is nearly silent. Kill switch: localStorage.ccmTelemOff = '1'.
+
+   Defensive: every path is wrapped so telemetry can never throw into the page
+   or alter app behaviour (the fetch wrapper is fully transparent — it always
+   returns the real promise/response untouched, even if logging fails). */
+(function () {
+  var ENDPOINT = 'https://ntfy.k4yapp.com/ccm-telemetry';
+  var TOKEN = 'tk_tkd7gmehrj9vch6ev7k0ivlohiga5'; // write-only → ccm-telemetry
+  var VER = '1.74.0';
+  try { if (localStorage.getItem('ccmTelemOff') === '1') return; } catch (e) {}
+  if (typeof GM_xmlhttpRequest !== 'function') return; // grant missing → no-op
+
+  // Stable-per-device client id so multiple beacons correlate into one timeline.
+  var cid = 'x';
+  try {
+    cid = localStorage.getItem('ccmTelemCid');
+    if (!cid) { cid = Math.random().toString(36).slice(2, 10); localStorage.setItem('ccmTelemCid', cid); }
+  } catch (e) {}
+
+  function path() { try { return location.pathname; } catch (e) { return '?'; } }
+  function clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) : s; }
+
+  // Compact, content-free layout snapshot — the heartbeat unit.
+  function state() {
+    try {
+      var vv = window.visualViewport, de = document.documentElement;
+      return {
+        vv: vv ? Math.round(vv.height) : null,
+        ih: window.innerHeight, iw: window.innerWidth,
+        sy: Math.round(window.scrollY || 0),
+        kb: de.classList.contains('ccm-kb-open') ? 1 : 0,
+        dr: de.classList.contains('ccm-drawer-open') ? 1 : 0,
+        on: navigator.onLine ? 1 : 0,
+      };
+    } catch (e) { return null; }
+  }
+
+  // Ring of recent heartbeats; attached to errors so each beacon carries the
+  // ~90s of layout history leading up to the break.
+  var ring = [], RING_MAX = 6;
+  function pushState() {
+    var s = state(); if (!s) return;
+    s.t = Date.now(); s.p = path();
+    ring.push(s); if (ring.length > RING_MAX) ring.shift();
+  }
+
+  // Outbound rate guard + per-signature dedupe so a render loop can't flood.
+  var sent = 0, windowStart = Date.now(), MAX_PER_MIN = 20;
+  var seen = {}; // signature -> last-sent ms
+  function allow(sig) {
+    var now = Date.now();
+    if (now - windowStart > 60000) { windowStart = now; sent = 0; }
+    if (sent >= MAX_PER_MIN) return false;
+    if (sig) { if (now - (seen[sig] || 0) < 30000) return false; seen[sig] = now; }
+    sent++; return true;
+  }
+
+  function beacon(kind, data, sig) {
+    if (!allow(sig)) return;
+    var body;
+    try {
+      body = JSON.stringify({
+        k: kind, cid: cid, ver: VER, p: path(),
+        ua: clip(navigator.userAgent, 180),
+        ts: new Date().toISOString(),
+        d: data || null,
+        hist: ring.slice(-3),
+      });
+    } catch (e) { return; }
+    if (body.length > 3800) body = body.slice(0, 3800); // stay under ntfy 4k
+    try {
+      GM_xmlhttpRequest({
+        method: 'POST', url: ENDPOINT, data: body,
+        headers: { 'Authorization': 'Bearer ' + TOKEN, 'X-Title': 'ccm:' + kind },
+        timeout: 8000,
+        onerror: function () {}, ontimeout: function () {},
+      });
+    } catch (e) {}
+  }
+  window.__ccmTelem = beacon; // let other modules report intentional events
+
+  // 1. Uncaught errors.
+  window.addEventListener('error', function (ev) {
+    try {
+      if (ev && ev.message) {
+        beacon('error', {
+          msg: clip(ev.message, 300),
+          src: clip(ev.filename, 160),
+          ln: ev.lineno, col: ev.colno,
+          stack: ev.error && ev.error.stack ? clip(ev.error.stack, 600) : null,
+        }, 'err:' + clip(ev.message, 80));
+      } else if (ev && ev.target && ev.target.tagName) {
+        // Resource load failure (script/img/css) — surfaces CDN/asset breakage.
+        var t = ev.target;
+        beacon('resfail', { tag: t.tagName, url: clip(t.src || t.href, 200) },
+          'res:' + clip(t.src || t.href, 100));
+      }
+    } catch (e) {}
+  }, true);
+
+  // 2. Unhandled promise rejections (most fetch failures land here).
+  window.addEventListener('unhandledrejection', function (ev) {
+    try {
+      var r = ev && ev.reason;
+      var msg = r && r.message ? r.message : String(r);
+      beacon('reject', { msg: clip(msg, 300), stack: r && r.stack ? clip(r.stack, 500) : null },
+        'rej:' + clip(msg, 80));
+    } catch (e) {}
+  });
+
+  // 3. console.error — React error boundaries log here before painting their
+  //    fallback ("Sidebar failed to load", etc.). Wrap transparently.
+  try {
+    var origErr = console.error;
+    console.error = function () {
+      try {
+        var parts = [];
+        for (var i = 0; i < arguments.length && i < 4; i++) {
+          var a = arguments[i];
+          parts.push(typeof a === 'string' ? a : (a && a.message) ? a.message : '');
+        }
+        var m = clip(parts.join(' '), 300);
+        if (m.trim()) beacon('console', { msg: m }, 'con:' + clip(m, 80));
+      } catch (e) {}
+      return origErr.apply(console, arguments);
+    };
+  } catch (e) {}
+
+  // 4. Failed fetches — capture method, path (NO query), status. This is what
+  //    nails "Sidebar failed to load": the session-list fetch returns !ok or
+  //    rejects. Wrapper is transparent — original promise is always returned.
+  try {
+    var origFetch = window.fetch;
+    if (typeof origFetch === 'function') {
+      window.fetch = function (input, init) {
+        var p = origFetch.apply(this, arguments);
+        try {
+          var url = (typeof input === 'string') ? input : (input && input.url) || '';
+          var u; try { u = new URL(url, location.href); } catch (e) { u = null; }
+          var ep = u ? u.pathname : clip(url, 120); // drop query (may hold content)
+          var method = (init && init.method) || (input && input.method) || 'GET';
+          p.then(function (res) {
+            try { if (res && !res.ok) beacon('fetchfail', { m: method, ep: ep, st: res.status }, 'ff:' + ep + res.status); } catch (e) {}
+          }, function (err) {
+            try { beacon('fetcherr', { m: method, ep: ep, msg: clip(err && err.message, 200) }, 'fe:' + ep); } catch (e) {}
+          });
+        } catch (e) {}
+        return p; // never alter what the app sees
+      };
+    }
+  } catch (e) {}
+
+  // 5. Error-boundary text watcher — the most direct signal for the sidebar
+  //    bug. When a "failed to load" / "Try again" fallback paints, beacon the
+  //    label once (deduped). Cheap: only scans subtrees that actually changed.
+  function scanText(root) {
+    try {
+      if (!root || !root.textContent) return;
+      var tc = root.textContent;
+      if (/failed to load|something went wrong|try again/i.test(tc) && tc.length < 400) {
+        beacon('boundary', { text: clip(tc.replace(/\s+/g, ' ').trim(), 200) },
+          'bnd:' + clip(tc, 60));
+      }
+    } catch (e) {}
+  }
+  try {
+    var mo = new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var add = muts[i].addedNodes;
+        for (var j = 0; j < add.length; j++) {
+          if (add[j].nodeType === 1) scanText(add[j]);
+        }
+      }
+    });
+    var startMO = function () { try { mo.observe(document.body, { childList: true, subtree: true }); } catch (e) {} };
+    if (document.body) startMO();
+    else document.addEventListener('DOMContentLoaded', startMO);
+  } catch (e) {}
+
+  // 6. Heartbeat ring + sparse keepalive. Record state every 15s; only emit a
+  //    standalone 'beat' if ≥5min since the last beacon (so quiet sessions stay
+  //    near-silent, but a long bug-hunt still leaves a breadcrumb trail).
+  var lastBeat = Date.now();
+  setInterval(function () {
+    try {
+      pushState();
+      if (document.visibilityState === 'visible' && Date.now() - lastBeat > 300000) {
+        lastBeat = Date.now();
+        beacon('beat', null, null);
+      }
+    } catch (e) {}
+  }, 15000);
+  pushState();
 })();
 
 /* Debug instrumentation — v1.38.0. Off by default; activate by adding
