@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.76.0
+// @version      1.77.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons END-TO-END ENCRYPTED diagnostics (errors, failed fetches/XHR, error-boundary signals, layout + network history) to a private ntfy topic — only the VPS private key can decrypt, so any PII in the stream stays protected in transit and at rest.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1377,12 +1377,13 @@ window.__ccmFlags = (function () {
     wasOpen = kbOpen;
   }
   vv.addEventListener('resize', sync);
-  // Also listen to 'scroll' — visualViewport.offsetTop changes (visual viewport
-  // pans within the layout viewport) fire vv.scroll, NOT vv.resize. The C
-  // black-gap bug is triggered exactly this way: after the drawer dismiss the
-  // last r11.sync sees off=0, then vv.offsetTop silently jumps to ~334 with no
-  // resize event, so --ccm-vvh stays at vv.height and body ends 334px short.
-  vv.addEventListener('scroll', sync);
+  // resize ONLY — adding a vv 'scroll' listener caused transcript-scroll drift
+  // on non-keyboard reflows (URL-bar show/hide fires vv.scroll every pixel and
+  // called sync() hundreds of times per gesture, nudging scrollTop on each one).
+  // The unpan logic (vv.offsetTop > 0) remains inside sync() and still runs
+  // whenever a resize fires alongside a pan (which is the common case on
+  // keyboard-open; rare cases where offsetTop changes with no resize are handled
+  // by the forced re-sync on drawer open/close via forceResync() below).
   sync();
 })();
 
