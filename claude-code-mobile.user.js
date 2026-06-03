@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.82.0
+// @version      1.83.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1963,6 +1963,18 @@ window.__ccmFlags = (function () {
    (not idle). Imperfect — a session connected only because it just finished
    also reads as working — but zero extra network. (Ben's call 2026-05-31.)
 
+   v1.83 — connection_status is STICKY (a finished session stays "connected" for
+   hours while its cloud container lingers before reaping), so the v1.70 proxy
+   above made long-idle sessions read as "Running" forever (reported 2026-06-03:
+   "nothing happened in 5h, still says active"). Fix: the connected=>working
+   proxy is now a LAST resort — an end-of-turn signal (post_turn_summary present,
+   or session_status:"idle") is classified ready BEFORE it. The proxy only fires
+   for a genuinely ambiguous live session with no end-of-turn signal at all, so a
+   merely-still-connected finished session correctly reads ready/awaiting and
+   gets its idle-age label. (Live-confirmed via ccm_session_status_probe.py: the
+   one connected+idle+review_ready session flipped working->ready; every
+   running+fresh session stayed working.)
+
    Headers: the endpoint 400s without anthropic-version and 404s without the
    org uuid. The org uuid is harvested from a URL the app has already fetched
    (performance resource entries / page HTML); anthropic-version is the public
@@ -2027,18 +2039,24 @@ window.__ccmFlags = (function () {
     // A turn that explicitly asked Ben something always wins — even over a live
     // connection. The ball is in his court, so it stays awaiting (yellow).
     if (st === 'requires_action' || needs) return 'awaiting';
-    // Background-work proxy (v1.70). The stock "N background tasks running"
-    // indicator is computed client-side by replaying /v1/sessions/<id>/events
-    // (~780KB per session); NEITHER the session list NOR the session detail
-    // carries a per-session task count (verified 2026-05-31). A running
-    // background task is exactly what keeps a session's container alive, so
-    // connection_status:"connected" is the free stand-in for "has live work" —
-    // treat a connected, non-awaiting session as working rather than idle.
-    // (Ben's call 2026-05-31, chosen over true per-session event counting to
-    // avoid multi-MB polls on the phone.)
+    // End-of-turn signals beat the sticky connection_status proxy (v1.83 fix).
+    // A finished session keeps connection_status:"connected" for HOURS while its
+    // cloud container lingers before reaping, so the v1.70 connected=>working
+    // proxy painted long-idle sessions as "Running" forever (reported 2026-06-03:
+    // "nothing happened in 5h but it still says active"). A post_turn_summary or
+    // an idle session_status means the turn has ENDED and output is waiting, so
+    // those are classified ready BEFORE we fall back to the connection proxy.
+    if (pts) return 'ready';            // turn ended, output waiting
+    if (st === 'idle') return 'ready';  // idle => turn ended
+    // Background-work proxy (v1.70), now a LAST resort. The stock "N background
+    // tasks running" indicator is computed client-side by replaying
+    // /v1/sessions/<id>/events (~780KB per session); NEITHER the session list NOR
+    // the session detail carries a per-session task count (verified 2026-05-31).
+    // Reached only when there is no end-of-turn signal at all (not running-fresh,
+    // no PTS, not idle) — a genuinely ambiguous live session — so a "connected"
+    // session is treated as working rather than idle. (Ben's call 2026-05-31,
+    // chosen over multi-MB per-session event polls on the phone.)
     if (s.connection_status === 'connected') return 'working';
-    if (pts) return 'ready';            // disconnected + turn ended
-    if (st === 'idle') return 'ready';  // disconnected idle
     return 'working';                   // disconnected running + no summary
   }
 
