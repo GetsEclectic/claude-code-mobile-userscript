@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.81.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons END-TO-END ENCRYPTED diagnostics (errors, failed fetches/XHR, error-boundary signals, layout + network history) to a private ntfy topic — only the VPS private key can decrypt, so any PII in the stream stays protected in transit and at rest.
+// @version      1.82.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
-// @connect      ntfy.k4yapp.com
 // @homepageURL  https://github.com/GetsEclectic/claude-code-mobile-userscript
 // @downloadURL  https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
 // @updateURL    https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
@@ -655,50 +654,57 @@ window.__ccmFlags = (function () {
 })();
 
 /* ────────────────────────────────────────────────────────────────────────
-   Remote telemetry — v1.74.0. Always-on, metadata-only.
+   Remote diagnostics — OPT-IN, DISABLED BY DEFAULT.
 
-   Why: the old debug system (below) is opt-in (?ccmDebug=1) and retrieval
-   means tapping DUMP then adb-pulling a file off the phone. That can't answer
-   "I hit a bug — just look at what happened." This module beacons diagnostic
-   metadata to a private, write-only ntfy topic the moment something breaks,
-   so the agent reads it server-side with `bin/ccm-telemetry` (no phone, no
-   debug flag, no adb).
+   What it's for: when something breaks on a phone, retrieving the old on-page
+   debug dump (?ccmDebug=1 + tap DUMP + pull the file off the device) can't
+   answer "I hit a bug — just look at what happened." This module can beacon a
+   small encrypted diagnostic the moment something breaks so it can be read
+   server-side. It is entirely OFF unless YOU turn it on.
 
-   Transport: GM_xmlhttpRequest POST to https://ntfy.k4yapp.com/ccm-telemetry
-   with a WRITE-ONLY bearer token. The token is public (this script is public),
-   but write-only means a leak only lets someone append to one metadata log —
-   it cannot read anyone's beacons back (verified 403 on read). Rotate by
-   re-minting the ccm-telem token on the VPS and bumping @version.
+   No server is baked into this public script. There is NO hostname, URL, or
+   token here. The module stays completely inert (returns immediately, wraps
+   nothing, sends nothing) unless you supply your OWN endpoint at runtime via
+   localStorage on your device:
 
-   PRIVACY (Principle: metadata only — Ben approved this scope, never content):
-     • URLs are reduced to location.pathname — the query string is DROPPED
-       because claude.ai/code carries prefilled prompts in ?prompt=… (that is
-       user content). Never beacon search/hash.
-     • We send: error text/stack, failed-fetch path+status, error-boundary
-       label text, viewport/layout dims, kb/drawer flags, UA, online state.
-     • We never read message bodies, response payloads, or session text.
+       localStorage.ccmTelemUrl    = 'https://your-host/your-topic'  // required
+       localStorage.ccmTelemToken  = '...'                          // optional bearer
+       localStorage.ccmTelemPubKey = '<base64 P-256 public key>'     // required
 
-   Volume: low. Errors beacon immediately (deduped by signature). Layout
-   heartbeats are kept in a small in-memory ring and only FLUSHED alongside an
-   error (for context) or as a sparse keepalive (≤1 / 5min), so a quiet session
-   is nearly silent. Kill switch: localStorage.ccmTelemOff = '1'.
+   Transport (only when enabled): GM_xmlhttpRequest POST to ccmTelemUrl. Because
+   the destination is user-supplied, your userscript manager will ask you to
+   allow that host the first time. The whole beacon body is end-to-end encrypted
+   (ECDH P-256 → HKDF-SHA256 → AES-256-GCM, ECIES) to ccmTelemPubKey, so only the
+   holder of the matching private key can read it.
 
-   Defensive: every path is wrapped so telemetry can never throw into the page
+   What a beacon would contain (when enabled): error text/stack, failed-fetch
+   path+status, error-boundary label text, viewport/layout dims, kb/drawer flags,
+   UA, online state. URLs are reduced to location.pathname (the query string is
+   DROPPED, since claude.ai/code carries prefilled prompts in ?prompt=…). Message
+   bodies, response payloads, and session text are never read.
+
+   Volume (when enabled): low. Errors beacon immediately (deduped by signature);
+   layout heartbeats live in a small in-memory ring, flushed only alongside an
+   error or as a sparse keepalive (≤1 / 5min).
+
+   Defensive: every path is wrapped so diagnostics can never throw into the page
    or alter app behaviour (the fetch wrapper is fully transparent — it always
    returns the real promise/response untouched, even if logging fails). */
 (function () {
-  var ENDPOINT = 'https://ntfy.k4yapp.com/ccm-telemetry';
-  var TOKEN = 'tk_tkd7gmehrj9vch6ev7k0ivlohiga5'; // write-only → ccm-telemetry
-  var VER = '1.81.0';
-  // Recipient public key (P-256, X9.62 uncompressed point, base64). The private
-  // key lives only on the VPS (~/.config/ccm-telemetry/telem_ec_private.pem). This
-  // script is PUBLIC, so the whole beacon body is end-to-end encrypted to this key
-  // (ECDH→HKDF-SHA256→AES-256-GCM, ECIES). Even though everything here is visible,
-  // nobody but the holder of the private key can read a beacon. We assume PII WILL
-  // appear in telemetry and secure the channel rather than try to scrub the source.
-  var PUBKEY_B64 = 'BPdmkCCeVTK1V1eXCCzXbNqDr6+dal6V5dTRJJDjWvOyHYD5v7dvDdC32vjl+dgJIxihXY5UWZH+vOemMBJV0us=';
-  try { if (localStorage.getItem('ccmTelemOff') === '1') return; } catch (e) {}
-  if (typeof GM_xmlhttpRequest !== 'function') return; // grant missing → no-op
+  // OPT-IN gate: nothing is sent unless the user configured their own endpoint.
+  var ENDPOINT = null, TOKEN = null, PUBKEY_B64 = null;
+  try {
+    ENDPOINT    = localStorage.getItem('ccmTelemUrl')    || null;
+    TOKEN       = localStorage.getItem('ccmTelemToken')  || null;
+    PUBKEY_B64  = localStorage.getItem('ccmTelemPubKey') || null;
+  } catch (e) {}
+  if (!ENDPOINT) return;                                 // disabled by default → no-op
+  if (typeof GM_xmlhttpRequest !== 'function') return;   // grant missing → no-op
+  // Recipient public key (P-256, X9.62 uncompressed point, base64). Beacons are
+  // end-to-end encrypted to it; only the holder of the matching private key can
+  // read them. Required — without it we cannot encrypt and we never send plaintext.
+  if (!PUBKEY_B64) return;
+  var VER = '1.82.0';
 
   // Stable-per-device client id so multiple beacons correlate into one timeline.
   var cid = 'x';
@@ -826,8 +832,8 @@ window.__ccmFlags = (function () {
         net: netRing.slice(-6),
       });
     } catch (e) { return; }
-    // Cap plaintext so the base64 envelope (~1.4x + overhead) stays under ntfy's
-    // 4k message limit; truncation only ever loses trailing context, never breaks
+    // Cap plaintext so the base64 envelope (~1.4x + overhead) stays under a
+    // typical ~4 KB message limit; truncation only ever loses trailing context, never breaks
     // decryption since the whole string is one AES-GCM blob.
     if (plaintext.length > 2600) plaintext = plaintext.slice(0, 2600);
     // No WebCrypto → never fall back to plaintext (the channel is public). Emit a
