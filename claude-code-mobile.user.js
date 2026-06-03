@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.77.0
+// @version      1.78.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons END-TO-END ENCRYPTED diagnostics (errors, failed fetches/XHR, error-boundary signals, layout + network history) to a private ntfy topic — only the VPS private key can decrypt, so any PII in the stream stays protected in transit and at rest.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -597,6 +597,29 @@ window.__ccmStyleEl = GM_addStyle(`
     opacity: 0.8 !important;
     white-space: nowrap !important;
     pointer-events: none !important;
+  }
+
+  /* 26. Side panel (plan / file / diff) full-width on phones. The detail panel
+     opens as the second "tile" in the .tiles-shell split, sharing width with the
+     chat through a draggable .tiles-handle -> at phone width it renders as an
+     unreadable ~40% column (the Plan panel that prompted this wrapped text to
+     ~10 chars/line; verified 2026-06-03: the handle's sibling tile measured 229px
+     wide / position:relative on a 412px viewport). The two tiles are classless
+     flex children (inline flex: 2|3 1 0px) split by the handle, so anchor off the
+     stable .tiles-handle: hide it, and promote the tile AFTER it (the opened
+     detail panel) to a full-bleed overlay covering the split area, so plan/file
+     text reflows to full width. The chat tile stays underneath; the panel's own
+     X (Close) returns to it. NOTE: must ship via GM_addStyle (Violentmonkey) —
+     claude.ai's CSP neutralises a tool-injected <style>, so an --inject-css test
+     silently no-ops; verify with --inject-userjs / on-device only. */
+  .tiles-handle { display: none !important; }
+  .tiles-handle ~ div {
+    position: absolute !important;
+    inset: 0 !important;
+    z-index: 40 !important;
+    flex: 1 1 100% !important;
+    width: 100% !important;
+    max-width: 100% !important;
   }
 }
 `);
