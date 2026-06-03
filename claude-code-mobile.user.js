@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.78.0
+// @version      1.79.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons END-TO-END ENCRYPTED diagnostics (errors, failed fetches/XHR, error-boundary signals, layout + network history) to a private ntfy topic — only the VPS private key can decrypt, so any PII in the stream stays protected in transit and at rest.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -689,7 +689,7 @@ window.__ccmFlags = (function () {
 (function () {
   var ENDPOINT = 'https://ntfy.k4yapp.com/ccm-telemetry';
   var TOKEN = 'tk_tkd7gmehrj9vch6ev7k0ivlohiga5'; // write-only → ccm-telemetry
-  var VER = '1.76.0';
+  var VER = '1.79.0';
   // Recipient public key (P-256, X9.62 uncompressed point, base64). The private
   // key lives only on the VPS (~/.config/ccm-telemetry/telem_ec_private.pem). This
   // script is PUBLIC, so the whole beacon body is end-to-end encrypted to this key
@@ -1319,6 +1319,33 @@ window.__ccmFlags = (function () {
     }
     return null;
   }
+  // Shared state refresh: recompute the keyboard-open class and republish the
+  // viewport-height CSS vars from the CURRENT visualViewport. Crucially it does
+  // NO scroll mutation (no scrollTop nudge, no window.scrollTo), so it is safe to
+  // call from the high-frequency vv 'scroll' event as well as 'resize'. Returns
+  // kbOpen so the resize path can drive unpan/scrollHold off the same value.
+  function refreshVars() {
+    maxH = Math.max(maxH, fullHeight());
+    window.__ccmMaxH = maxH;
+    var kbOpen = (maxH - vv.height) > 150;
+    // v1.45 bisect toggle: ccmRule11=0 disables the height pin entirely by
+    // never adding ccm-kb-open (the sole switch arming rule 11's CSS).
+    de.classList.toggle('ccm-kb-open', kbOpen && window.__ccmFlags.rule11);
+    // Body height = bottom edge of the visual viewport in layout coords. When
+    // vv is anchored at the top of the layout viewport (offsetTop=0, the
+    // normal case), this is just vv.height — same as before. But the C
+    // black-gap bug repros with vv.offsetTop jumping to ~334 (visualViewport
+    // gets scrolled WITHIN the layout viewport during menu→session→menu→
+    // session nav); body sized to vv.height alone ends 334px short of the
+    // visible bottom, and that gap renders black. Adding offsetTop closes it.
+    de.style.setProperty('--ccm-vvh', (vv.height + vv.offsetTop) + 'px');
+    // Companion to rule 11b. Always set to vv.height alone (no offsetTop
+    // addition): the drawer-open pin needs layout == visible area so Firefox
+    // doesn't pan; --ccm-vvh's vv.height+offsetTop formula serves rule 11's
+    // closed-drawer case and is the wrong target here.
+    de.style.setProperty('--ccm-vvh-drawer', vv.height + 'px');
+    return kbOpen;
+  }
   function sync() {
     // Rule 11 only applies below 900px; above it the class does nothing and the
     // scroll-hold would nudge an unrelated scroller. Bail (and clear any armed
@@ -1347,25 +1374,7 @@ window.__ccmFlags = (function () {
       prevH = vv.height;
       return;
     }
-    maxH = Math.max(maxH, fullHeight());
-    window.__ccmMaxH = maxH;
-    var kbOpen = (maxH - vv.height) > 150;
-    // v1.45 bisect toggle: ccmRule11=0 disables the height pin entirely by
-    // never adding ccm-kb-open (the sole switch arming rule 11's CSS).
-    de.classList.toggle('ccm-kb-open', kbOpen && window.__ccmFlags.rule11);
-    // Body height = bottom edge of the visual viewport in layout coords. When
-    // vv is anchored at the top of the layout viewport (offsetTop=0, the
-    // normal case), this is just vv.height — same as before. But the C
-    // black-gap bug repros with vv.offsetTop jumping to ~334 (visualViewport
-    // gets scrolled WITHIN the layout viewport during menu→session→menu→
-    // session nav); body sized to vv.height alone ends 334px short of the
-    // visible bottom, and that gap renders black. Adding offsetTop closes it.
-    de.style.setProperty('--ccm-vvh', (vv.height + vv.offsetTop) + 'px');
-    // Companion to rule 11b. Always set to vv.height alone (no offsetTop
-    // addition): the drawer-open pin needs layout == visible area so Firefox
-    // doesn't pan; --ccm-vvh's vv.height+offsetTop formula serves rule 11's
-    // closed-drawer case and is the wrong target here.
-    de.style.setProperty('--ccm-vvh-drawer', vv.height + 'px');
+    var kbOpen = refreshVars();
     if (window.__ccmDbg) window.__ccmDbg.log('r11.sync', {
       vv: Math.round(vv.height), max: maxH, kb: kbOpen ? 1 : 0,
       off: Math.round(vv.offsetTop),
@@ -1400,13 +1409,27 @@ window.__ccmFlags = (function () {
     wasOpen = kbOpen;
   }
   vv.addEventListener('resize', sync);
-  // resize ONLY — adding a vv 'scroll' listener caused transcript-scroll drift
-  // on non-keyboard reflows (URL-bar show/hide fires vv.scroll every pixel and
-  // called sync() hundreds of times per gesture, nudging scrollTop on each one).
-  // The unpan logic (vv.offsetTop > 0) remains inside sync() and still runs
-  // whenever a resize fires alongside a pan (which is the common case on
-  // keyboard-open; rare cases where offsetTop changes with no resize are handled
-  // by the forced re-sync on drawer open/close via forceResync() below).
+  // v1.78: nudge-free reconcile on vv 'scroll'. The handler went resize-only in
+  // v1.77 (85e45b8) to kill the transcript-scroll drift the old full-sync scroll
+  // listener caused — it ran scrollHold's `scrollTop += delta` on every URL-bar
+  // pixel. But resize-only ALSO dropped the only path that re-synced state when a
+  // keyboard transition lands as a visualViewport PAN (offsetTop/height change
+  // delivered as 'scroll', no 'resize'). Telemetry then caught ccm-kb-open stuck
+  // ON for minutes at vv==innerHeight (keyboard down): rule 11's height-pin +
+  // overflow:hidden clamp the app shorter than the real viewport → blank space at
+  // the bottom, header clipped off the top, and the app's own ResizeObserver
+  // loops forever ("loop completed with undelivered notifications" flood).
+  // refreshVars() restores the re-sync WITHOUT the drift: it only republishes the
+  // CSS vars + class and never touches any scroller, so the URL-bar-pixel storm
+  // can't move the transcript. The width>900 / sidebar-tap guards mirror sync().
+  vv.addEventListener('scroll', function () {
+    if (window.innerWidth > 900) {
+      if (wasOpen) { de.classList.remove('ccm-kb-open'); wasOpen = false; }
+      return;
+    }
+    if (Date.now() < (window.__ccmSidebarTapUntil || 0)) return;
+    refreshVars();
+  });
   sync();
 })();
 
