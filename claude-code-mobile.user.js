@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.80.0
+// @version      1.81.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons END-TO-END ENCRYPTED diagnostics (errors, failed fetches/XHR, error-boundary signals, layout + network history) to a private ntfy topic — only the VPS private key can decrypt, so any PII in the stream stays protected in transit and at rest.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -689,7 +689,7 @@ window.__ccmFlags = (function () {
 (function () {
   var ENDPOINT = 'https://ntfy.k4yapp.com/ccm-telemetry';
   var TOKEN = 'tk_tkd7gmehrj9vch6ev7k0ivlohiga5'; // write-only → ccm-telemetry
-  var VER = '1.80.0';
+  var VER = '1.81.0';
   // Recipient public key (P-256, X9.62 uncompressed point, base64). The private
   // key lives only on the VPS (~/.config/ccm-telemetry/telem_ec_private.pem). This
   // script is PUBLIC, so the whole beacon body is end-to-end encrypted to this key
@@ -1308,6 +1308,13 @@ window.__ccmFlags = (function () {
   function fullHeight() { return Math.max(window.innerHeight, vv.height); }
   var maxH = fullHeight();
   var prevH = vv.height;
+  // Layout-viewport WIDTH at the last sync. A soft-keyboard event never changes
+  // innerWidth, so a width change means the layout context changed (the
+  // document-start desktop-ish viewport collapsing to claude.ai's mobile meta,
+  // or a nav/zoom/orientation change) — the cue to re-baseline maxH (see
+  // refreshVars). Without this, maxH (a running max) latches the tallest context
+  // ever seen and the keyboard reads "open" forever in shorter ones.
+  var prevIW = window.innerWidth;
   var wasOpen = false;
   function findScroller() {
     var m = document.querySelector('.epitaxy-markdown');
@@ -1325,6 +1332,23 @@ window.__ccmFlags = (function () {
   // call from the high-frequency vv 'scroll' event as well as 'resize'. Returns
   // kbOpen so the resize path can drive unpan/scrollHold off the same value.
   function refreshVars() {
+    // Re-baseline the keyboard-down height when the layout WIDTH changes. maxH is
+    // a running max of fullHeight() so we remember the pre-keyboard full height on
+    // browsers where innerHeight shrinks with the keyboard too — but that max must
+    // not bleed across layout contexts. Telemetry (Ben's Firefox) caught the
+    // failure: at document-start the page is briefly desktop-ish (ih=1844/iw=980)
+    // before claude.ai's mobile viewport meta applies (ih=854/iw=454); maxH
+    // latched 1844 and never came down, so in-session (vv=854) the test
+    // (maxH - vv.height) = 990 > 150 pinned .ccm-kb-open ON with the keyboard
+    // DOWN — blank-bottom / clipped-top + a ResizeObserver-loop flood for minutes.
+    // A soft keyboard never changes innerWidth, so a width delta is an unambiguous
+    // "context changed, not a keyboard" signal: drop the stale max to the current
+    // full height. The real keyboard delta (vv shrinking at constant width) is
+    // untouched, so detection still fires normally.
+    if (window.innerWidth !== prevIW) {
+      prevIW = window.innerWidth;
+      maxH = fullHeight();
+    }
     maxH = Math.max(maxH, fullHeight());
     window.__ccmMaxH = maxH;
     var kbOpen = (maxH - vv.height) > 150;
