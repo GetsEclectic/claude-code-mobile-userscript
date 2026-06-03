@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.83.0
+// @version      1.84.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1963,17 +1963,26 @@ window.__ccmFlags = (function () {
    (not idle). Imperfect — a session connected only because it just finished
    also reads as working — but zero extra network. (Ben's call 2026-05-31.)
 
-   v1.83 — connection_status is STICKY (a finished session stays "connected" for
-   hours while its cloud container lingers before reaping), so the v1.70 proxy
-   above made long-idle sessions read as "Running" forever (reported 2026-06-03:
-   "nothing happened in 5h, still says active"). Fix: the connected=>working
-   proxy is now a LAST resort — an end-of-turn signal (post_turn_summary present,
-   or session_status:"idle") is classified ready BEFORE it. The proxy only fires
-   for a genuinely ambiguous live session with no end-of-turn signal at all, so a
-   merely-still-connected finished session correctly reads ready/awaiting and
-   gets its idle-age label. (Live-confirmed via ccm_session_status_probe.py: the
-   one connected+idle+review_ready session flipped working->ready; every
-   running+fresh session stayed working.)
+   v1.83 — demoted the connected=>working proxy below the end-of-turn signals so
+   a merely-still-connected finished session no longer read "Running" forever.
+   But that ALSO hid genuine background work: an idle-foreground session running
+   a background task got classified ready (Ben 2026-06-03: "it's idle but waiting
+   for background tasks to finish").
+
+   v1.84 — drop connection_status ENTIRELY and measure activity by updated_at
+   freshness alone. Two measured facts forced this (ccm_conn_age_probe.py /
+   ccm_session_status_probe.py, 2026-06-03):
+     - connection_status is NOT liveness: it read "connected" on 200h+ archived
+       sessions, i.e. it is sticky and means nothing about whether work is live.
+       The v1.70 proxy was built on a signal that doesn't track liveness.
+     - updated_at DOES track activity, including BACKGROUND work: the "Local LLM
+       keyboard suggestions" session, idle-foreground with a live bg task, showed
+       updated_at 13s fresh one moment and 256s another — it bumps when the bg
+       task emits an event. So freshness catches background work, not just turns.
+   New rule: isFresh(updated_at) => working (foreground OR background); otherwise
+   fall through to awaiting / ready / idle as before. Honest limitation: a bg task
+   silent longer than FRESH_MS (3 min) can't be told apart from a finished session
+   on the list endpoint, so it reads ready until it emits again and re-freshens.
 
    Headers: the endpoint 400s without anthropic-version and 404s without the
    org uuid. The org uuid is harvested from a URL the app has already fetched
@@ -2032,32 +2041,29 @@ window.__ccmFlags = (function () {
     if (!s) return null;
     var st = s.session_status;
     if (DROP[st]) return null;
-    if (st === 'running' && isFresh(s)) return 'working';  // actively in a turn
+    // Activity is measured by updated_at FRESHNESS — NOT session_status and NOT
+    // connection_status (v1.84). A session bumps updated_at whenever it emits an
+    // event: during a foreground turn OR while a BACKGROUND task is working. So a
+    // fresh timestamp => working regardless of session_status, which is exactly
+    // what makes an idle-foreground session with a live background task read as
+    // working (Ben 2026-06-03: "it's idle but waiting for background tasks to
+    // finish"). connection_status is deliberately unused: it is sticky and
+    // meaningless as liveness — observed "connected" on 200h+ archived sessions —
+    // which is what made the v1.70 connected=>working proxy paint finished
+    // sessions active forever ("nothing happened in 5h but it still says active").
+    if (isFresh(s)) return 'working';
+    // Not fresh => no event in the freshness window. The turn (and any bg task)
+    // has gone quiet; classify what it wants from Ben. NOTE: a background task
+    // that stays silent longer than FRESH_MS is indistinguishable from a finished
+    // session on the list endpoint (no per-session task count exists there), so
+    // it reads ready until it emits again and re-freshens — best effort.
     var pts = s.post_turn_summary ||
               (s.external_metadata && s.external_metadata.post_turn_summary);
     var needs = (pts && pts.needs_action) || '';
-    // A turn that explicitly asked Ben something always wins — even over a live
-    // connection. The ball is in his court, so it stays awaiting (yellow).
-    if (st === 'requires_action' || needs) return 'awaiting';
-    // End-of-turn signals beat the sticky connection_status proxy (v1.83 fix).
-    // A finished session keeps connection_status:"connected" for HOURS while its
-    // cloud container lingers before reaping, so the v1.70 connected=>working
-    // proxy painted long-idle sessions as "Running" forever (reported 2026-06-03:
-    // "nothing happened in 5h but it still says active"). A post_turn_summary or
-    // an idle session_status means the turn has ENDED and output is waiting, so
-    // those are classified ready BEFORE we fall back to the connection proxy.
+    if (st === 'requires_action' || needs) return 'awaiting';  // explicit ask
     if (pts) return 'ready';            // turn ended, output waiting
-    if (st === 'idle') return 'ready';  // idle => turn ended
-    // Background-work proxy (v1.70), now a LAST resort. The stock "N background
-    // tasks running" indicator is computed client-side by replaying
-    // /v1/sessions/<id>/events (~780KB per session); NEITHER the session list NOR
-    // the session detail carries a per-session task count (verified 2026-05-31).
-    // Reached only when there is no end-of-turn signal at all (not running-fresh,
-    // no PTS, not idle) — a genuinely ambiguous live session — so a "connected"
-    // session is treated as working rather than idle. (Ben's call 2026-05-31,
-    // chosen over multi-MB per-session event polls on the phone.)
-    if (s.connection_status === 'connected') return 'working';
-    return 'working';                   // disconnected running + no summary
+    if (st === 'idle') return 'ready';  // idle, no recent activity
+    return 'working';                   // status still 'running' but quiet (long op)
   }
 
   // A session is "waiting on Ben" (counts toward the idle badge) when its turn
