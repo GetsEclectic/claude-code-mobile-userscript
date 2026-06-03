@@ -22,6 +22,8 @@ prefix is hidden), the tighter side margins, and the recolored Send button.
 
 ## What it changes
 
+Layout and readability:
+
 - **Readable text.** Lifts control labels and message prose off the stock
   ~13–14px up to 16px, with comfortable line height.
 - **Real finger targets.** Icon-only buttons (Send, attach, session actions,
@@ -38,13 +40,42 @@ prefix is hidden), the tighter side margins, and the recolored Send button.
   of stranding it on a separate toolbar row.
 - **Findable Send button.** Paints the Send/Stop action with Claude's coral
   accent (it otherwise blends into the composer) and shapes it as a tidy disc.
+- **Reclaimed title width.** Hides the redundant repo prefix in the in-session
+  title bar so the session title gets the full width.
+- **Tamed question cards.** Caps the height of the in-transcript question /
+  approval card and makes its body scroll, so a long prompt can't push the
+  conversation off-screen or paint over its own options.
+- **Full-width side panel.** When a plan / file / diff panel opens, it takes the
+  full width instead of cramming into a ~40% column, so its text reflows
+  readably; the panel's own Close returns you to the chat.
+
+Keyboard and navigation:
+
 - **Soft-keyboard handling.** Pins the layout to the actual visible viewport so
   the composer rides just above the keyboard instead of being hidden behind it,
   and holds the transcript in place as the keyboard opens and closes.
+- **Keyboard stays down on open.** Switching into a session no longer pops the
+  soft keyboard up over the history — it only rises when you actually tap the
+  composer, so you can read the conversation first.
 - **Sidebar drawer auto-dismiss.** Tapping a nav row in the mobile drawer now
   closes the drawer instead of leaving it floating over the new page.
-- **Reclaimed title width.** Hides the redundant repo prefix in the in-session
-  title bar so the session title gets the full width.
+- **Wider recents drawer.** Widens the open sidebar/recents panel (capped at the
+  viewport) and trims rows you don't use, so more of your recent sessions fit —
+  especially with the keyboard up.
+- **Native long-press menu.** Disables the app's custom right-click / long-press
+  menu so the browser's own selection / copy menu shows through.
+
+At-a-glance session state:
+
+- **Idle-session badge.** Shows a small count badge on the sidebar toggle for
+  sessions that are idle or waiting on you, so you can see there's something to
+  attend to without opening the drawer.
+- **Idle-age labels.** Tags each recents row with how long that session has been
+  idle.
+- **Steer a running turn.** While a turn is streaming and the composer has text,
+  the bottom-right button becomes a "send as steer" action (distinct blue, ↑)
+  so you can redirect a turn without the Stop → retype → Send dance. With an
+  empty composer it stays the normal Stop button.
 
 ## Install
 
@@ -62,6 +93,35 @@ prefix is hidden), the tighter side margins, and the recolored Send button.
 
 The script declares `@updateURL` / `@downloadURL`, so your userscript manager
 picks up new versions on its normal update check — no need to reinstall.
+
+## Telemetry / diagnostics
+
+**Off by default. This script sends nothing unless you explicitly turn it on.**
+
+The script contains an optional diagnostics module that can beacon a small
+error report (uncaught errors, failed requests, error-boundary text, and basic
+layout/viewport metrics) so a bug you hit on a phone can be inspected after the
+fact. It ships **inert**: there is **no server, URL, or token in this script**,
+and the module returns immediately and wraps nothing unless you supply your own
+endpoint at runtime.
+
+To enable it on your own device, set these in `localStorage` on `claude.ai`:
+
+```js
+localStorage.ccmTelemUrl    = 'https://your-host/your-topic'; // required to enable
+localStorage.ccmTelemToken  = '...';                          // optional bearer token
+localStorage.ccmTelemPubKey = '<base64 P-256 public key>';    // required to encrypt
+```
+
+When enabled, each beacon is end-to-end encrypted (ECDH P-256 → HKDF-SHA256 →
+AES-256-GCM) to the public key you provide, so only the holder of the matching
+private key can read it; if WebCrypto is unavailable the script sends a tiny
+content-free marker rather than any plaintext. URLs are reduced to
+`location.pathname` (query strings are dropped), and message bodies and response
+payloads are never read. Because the destination is your own host, your
+userscript manager will prompt you to allow that host the first time.
+
+To turn it back off, clear `ccmTelemUrl` (`delete localStorage.ccmTelemUrl`).
 
 ## Developing / verifying changes
 
@@ -83,6 +143,11 @@ on-disk session cookie is what lets the headless run reach the app). Outputs lan
 in `/tmp/claude_web_dump.{png,json,html}`. The script header documents the full
 flag set — open a session, fill the composer, simulate the soft keyboard, or dump
 an element's box model up its ancestor chain.
+
+The headless dump is reliable for static layout, contrast, and tap-target
+checks, but it raises no real soft keyboard and doesn't model touch-vs-scroll the
+way a phone does — so behaviors like keyboard handling and tap dismissal should
+be confirmed on a real mobile browser before shipping.
 
 ## Notes
 
