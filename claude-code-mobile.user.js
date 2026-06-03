@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.79.0
+// @version      1.80.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Beacons END-TO-END ENCRYPTED diagnostics (errors, failed fetches/XHR, error-boundary signals, layout + network history) to a private ntfy topic — only the VPS private key can decrypt, so any PII in the stream stays protected in transit and at rest.
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -689,7 +689,7 @@ window.__ccmFlags = (function () {
 (function () {
   var ENDPOINT = 'https://ntfy.k4yapp.com/ccm-telemetry';
   var TOKEN = 'tk_tkd7gmehrj9vch6ev7k0ivlohiga5'; // write-only → ccm-telemetry
-  var VER = '1.79.0';
+  var VER = '1.80.0';
   // Recipient public key (P-256, X9.62 uncompressed point, base64). The private
   // key lives only on the VPS (~/.config/ccm-telemetry/telem_ec_private.pem). This
   // script is PUBLIC, so the whole beacon body is end-to-end encrypted to this key
@@ -1338,12 +1338,28 @@ window.__ccmFlags = (function () {
     // gets scrolled WITHIN the layout viewport during menu→session→menu→
     // session nav); body sized to vv.height alone ends 334px short of the
     // visible bottom, and that gap renders black. Adding offsetTop closes it.
-    de.style.setProperty('--ccm-vvh', (vv.height + vv.offsetTop) + 'px');
+    //
+    // De-dupe the WRITE (v1.80): vv 'scroll' fires every pixel during a pan /
+    // momentum-scroll, and rewriting --ccm-vvh to an identical value still
+    // dirties style and can feed the app's own ResizeObserver into a "loop
+    // completed with undelivered notifications" flood (telemetry caught this at
+    // v1.79 during active interaction). Only set the property when the computed
+    // px actually changes, so the high-frequency scroll path is a no-op whenever
+    // the visible geometry hasn't moved. A genuine keyboard close (height jumps
+    // back to full) still changes the value, so the var refreshes as before.
+    var vvh = (vv.height + vv.offsetTop);
+    if (vvh !== window.__ccmLastVvh) {
+      window.__ccmLastVvh = vvh;
+      de.style.setProperty('--ccm-vvh', vvh + 'px');
+    }
     // Companion to rule 11b. Always set to vv.height alone (no offsetTop
     // addition): the drawer-open pin needs layout == visible area so Firefox
     // doesn't pan; --ccm-vvh's vv.height+offsetTop formula serves rule 11's
-    // closed-drawer case and is the wrong target here.
-    de.style.setProperty('--ccm-vvh-drawer', vv.height + 'px');
+    // closed-drawer case and is the wrong target here. Same de-dupe.
+    if (vv.height !== window.__ccmLastVvhDrawer) {
+      window.__ccmLastVvhDrawer = vv.height;
+      de.style.setProperty('--ccm-vvh-drawer', vv.height + 'px');
+    }
     return kbOpen;
   }
   function sync() {
