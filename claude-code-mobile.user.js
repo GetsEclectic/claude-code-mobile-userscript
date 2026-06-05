@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.84.0
+// @version      1.85.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -65,14 +65,23 @@ window.__ccmStyleEl = GM_addStyle(`
   /* 4b. The native "Scroll to bottom" pill is an absolute overlay anchored at
      top:-32px and sized to its own ~24px height, so it sits cleanly in the
      transcript just above the composer dock. Rules 2 and 4 used to inflate it
-     to a 44/40px finger target, but its anchor is fixed for the 24px height —
-     the taller box overflowed downward into the dock and upward into the
-     transcript, surfacing as a stray floating chevron box straddling the last
-     transcript line (it's a transient overlay, not a primary tap target). Keep
-     it native; specificity (0,1,0) outranks rule 4's bare button selector. */
+     to a 44/40px finger target via min-height, but its anchor is fixed for the
+     24px height — the taller LAYOUT box overflowed downward into the dock and
+     upward into the transcript, surfacing as a stray floating chevron box
+     straddling the last transcript line.
+
+     To make it a bigger tap target without that overflow, keep the 24px layout
+     box (min-* pinned to 0 so rules 2/4 don't grow it) and enlarge it visually
+     with transform: scale(). transform-origin: center bottom grows the pill
+     UPWARD into the empty transcript — the bottom edge stays put, preserving
+     the ~8px clearance to the dock — and the transform also enlarges the
+     hit-test area, so the finger target grows with the visual. Specificity
+     (0,1,0) outranks rule 4's bare button selector. */
   [aria-label="Scroll to bottom"] {
     min-width: 0 !important;
     min-height: 0 !important;
+    transform: scale(1.5) !important;
+    transform-origin: center bottom !important;
   }
 
   /* 5. Home Sessions / Pull-requests rows: stock claude.ai/code overlaps the
