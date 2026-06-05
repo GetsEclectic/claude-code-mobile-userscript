@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.85.0
+// @version      1.86.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -119,11 +119,25 @@ window.__ccmStyleEl = GM_addStyle(`
     line-height: 1.55 !important;
   }
 
-  /* 7. Reclaim the 40px side gutter. The shared .epitaxy-chat-size hook insets
-     both the transcript prose and the bottom dock, so one rule narrows the
-     left/right margins everywhere — and closes the wide gap to the right of the
-     return/send symbol, which is that same gutter. */
-  .epitaxy-chat-size {
+  /* 7. Reclaim the side gutter. The app insets both the transcript prose and the
+     bottom dock so one set of rules narrows the left/right margins everywhere —
+     and closes the wide gap to the right of the return/send symbol, which is
+     that same gutter.
+
+     v1.86: the single .epitaxy-chat-size hook was split by the app into
+     .epitaxy-default-view-width (transcript/header column) and
+     .epitaxy-composer-width (composer dock); .epitaxy-chat-size no longer
+     exists, so the v1.2 rule went stale and the native gutter came back on BOTH
+     the transcript AND the composer (Ben 2026-06-05: "ccm got narrower … the
+     composer is narrower too"). Target the new hooks, and keep the old one for
+     any view still on the prior class. The override is mechanism-agnostic:
+     max-width:none releases a width-constrained centered column, then the 12px
+     padding insets it — so it reclaims the gutter whether the app drives it with
+     a max-width or with horizontal padding. */
+  .epitaxy-chat-size,
+  .epitaxy-default-view-width,
+  .epitaxy-composer-width {
+    max-width: none !important;
     padding-left: 12px !important;
     padding-right: 12px !important;
   }
