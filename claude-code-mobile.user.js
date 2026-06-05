@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.86.0
+// @version      1.87.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -136,9 +136,10 @@ window.__ccmStyleEl = GM_addStyle(`
      a max-width or with horizontal padding. */
   .epitaxy-chat-size,
   .epitaxy-default-view-width,
+  .epitaxy-transcript-width,
   .epitaxy-composer-width {
     max-width: none !important;
-    padding-left: 12px !important;
+    padding-left: 4px !important;
     padding-right: 12px !important;
   }
   /* Tighten the vertical gaps between branch bar, composer and toolbar. */
