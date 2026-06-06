@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.89.0
+// @version      1.90.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2413,16 +2413,50 @@ window.__ccmFlags = (function () {
     if (el.scrollTop !== 0) el.scrollTop = 0;
     if (el.scrollLeft !== 0) el.scrollLeft = 0;
   }
+  // v1.90: the named-roots list (html/body/.epitaxy-root) went stale when the
+  // app re-wrapped its mount. The header [data-top-left] now lives inside a new
+  // flex shell — `.flex-1.min-h-0 … overflow-x-clip overflow-y-auto` — that is
+  // an ANCESTOR of .epitaxy-root, and .epitaxy-root itself is now
+  // overflow:visible (so pinning it is a no-op). That outer shell is the scroller
+  // the browser moves to reveal the focused composer when the keyboard is up,
+  // carrying the header off the top — the pin never touched it. Generalize:
+  // walk up from .epitaxy-root to <html> and treat every scrollable ancestor as
+  // a root. These ALL live outside .epitaxy-root, so none is ever the transcript
+  // or sidebar-Recents scroller (those are nested INSIDE it) — pinning them stays
+  // safe, and this self-heals if the app re-wraps the mount again.
+  // Cache the computed list; recompute only on DOM mutation (see observer below),
+  // so the per-scroll-frame path stays getComputedStyle-free.
+  var cachedRoots = null;
+  function scrollableAncestors() {
+    var out = [];
+    var el = document.querySelector('.epitaxy-root');
+    el = el && el.parentElement;
+    while (el && el !== document.documentElement && el !== document.body) {
+      var ov = getComputedStyle(el).overflowY;
+      if (ov === 'auto' || ov === 'scroll') out.push(el);
+      el = el.parentElement;
+    }
+    return out;
+  }
   function roots() {
-    return [document.documentElement, document.body,
-            document.querySelector('.epitaxy-root')];
+    if (!cachedRoots) {
+      cachedRoots = [document.documentElement, document.body,
+                     document.querySelector('.epitaxy-root')]
+                    .concat(scrollableAncestors());
+    }
+    return cachedRoots;
   }
   function pinAll() { roots().forEach(pin); }
+  function isRoot(t) {
+    if (t === document || t === document.documentElement || t === document.body)
+      return true;
+    if (t && t.classList && t.classList.contains('epitaxy-root')) return true;
+    return roots().indexOf(t) !== -1;  // the scrollable outer-shell ancestors
+  }
   // Snap a specific root back the moment the browser scrolls it.
   function onScroll(e) {
     var t = e.target;
-    if (t === document || t === document.documentElement ||
-        t === document.body || (t && t.classList && t.classList.contains('epitaxy-root'))) {
+    if (isRoot(t)) {
       pin(t === document ? document.scrollingElement : t);
       // Belt-and-suspenders: a body scroll routed through document, or an
       // .epitaxy-root remount, can leave a sibling root dirty. Cheap to sweep.
@@ -2447,7 +2481,8 @@ window.__ccmFlags = (function () {
   pinAll();
   // Re-bind as the SPA mounts / remounts .epitaxy-root, and re-assert the pin
   // (a remount can arrive already-scrolled before any scroll event fires).
-  new MutationObserver(function () { bindRoots(); pinAll(); })
+  // Invalidate the cached root list first: a remount can swap the scroll shell.
+  new MutationObserver(function () { cachedRoots = null; bindRoots(); pinAll(); })
     .observe(document.documentElement, { childList: true, subtree: true });
 })();
 
