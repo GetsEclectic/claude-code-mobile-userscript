@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.88.0
+// @version      1.89.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -24,8 +24,14 @@
 window.__ccmStyleEl = GM_addStyle(`
 @media (max-width: 900px) {
 
-  /* 1. Lift control & label text off the 12-13px default. */
-  button, a[href], [role="button"], [role="menuitem"], [role="tab"],
+  /* 1. Lift control & label text off the 12-13px default. CSS attribute
+     selectors are exact-match, so a bare [role="menuitem"] never reaches a
+     Radix RadioGroup/CheckboxGroup row (role="menuitemradio"/"menuitemcheckbox")
+     — those are what the permission-mode menu (Accept edits / Plan mode / Auto
+     mode) and the model/effort pickers use, and they shipped at the stock 13px.
+     List all three menu-item roles so every popup row gets the lift. */
+  button, a[href], [role="button"], [role="menuitem"],
+  [role="menuitemradio"], [role="menuitemcheckbox"], [role="tab"],
   [role="option"], summary, label, select {
     font-size: 16px !important;
     line-height: 1.3 !important;
@@ -478,17 +484,24 @@ window.__ccmStyleEl = GM_addStyle(`
     gap: 0 !important;
   }
 
-  /* 19. The session-actions dropdown — the "little arrow" menu next to the
-     in-session title (Open in / Rename / Color / Transcript view / Copy link /
-     Edit environment / Archive / Delete). Its rows are role="menuitem", so rule 1
-     already lifts their label to 16px — but rule 4's 40px min-height floor only
-     covers button / [role="button"], never menuitem, so the rows keep their stock
-     3px py padding and render ~27px tall: a cramped, easy-to-mis-tap target. Bump
-     the label a touch more and give each row a 40px finger-height. The row is
-     already display:flex / items-center (its own classes), so min-height vertically
-     centers the label rather than stretching it, and the submenu-arrow rows
+  /* 19. Popup-menu rows — the session-actions dropdown (Open in / Rename / Color
+     / Transcript view / Copy link / Edit environment / Archive / Delete) AND the
+     permission-mode menu (Accept edits / Plan mode / Auto mode, off the composer
+     toggle) plus the model/effort pickers. Rule 1 already lifts the labels to
+     16px, but rule 4's 40px min-height floor only covers button / [role="button"]
+     — never the menu-item roles — so the rows keep their stock py padding and
+     render cramped (~27px for the action menu; just 24px for the mode menu, whose
+     rows are min-h-[var(--h4)]). Bump the label a touch more and give each row a
+     40px finger-height.
+
+     The mode/picker rows are role="menuitemradio" (a Radix RadioGroup) and the
+     action rows are role="menuitem"; a bare [role="menuitem"] is exact-match and
+     misses the radio rows entirely — the cramped mode menu in Ben's 2026-06-06
+     screenshot — so list all three menu-item roles. The rows are already
+     display:flex / items-center (own classes), so min-height vertically centers
+     the label rather than stretching it, and the submenu-arrow rows
      (justify-between) keep their layout. */
-  [role="menuitem"] {
+  [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"] {
     font-size: 17px !important;
     min-height: 40px !important;
   }
