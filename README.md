@@ -79,20 +79,50 @@ At-a-glance session state:
 
 ## Install
 
-1. Install a userscript manager. On a phone the common setup is **Firefox for
-   Android + [Violentmonkey](https://violentmonkey.github.io/)**; on desktop,
-   Violentmonkey or Tampermonkey in any major browser.
-2. Open the raw script URL — the userscript manager will offer to install it:
+The script runs inside a *userscript manager* — a small browser add-on that
+injects scripts into matching pages. Setting that up is a one-time, ~2-minute
+step; after that the script keeps itself up to date.
 
-   ```
-   https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
-   ```
+### On a phone (Firefox for Android)
 
-3. Open [claude.ai/code](https://claude.ai/code) on your phone. The fixes apply
-   automatically at phone widths.
+Firefox is the one mobile browser that supports the add-on this needs.
+
+1. Install **Firefox for Android** if you don't already use it.
+2. Add the **[Violentmonkey](https://addons.mozilla.org/firefox/addon/violentmonkey/)**
+   extension: open that link in Firefox, tap **Add to Firefox**, then **Add**.
+3. Tap the install link — Violentmonkey opens its install screen, where you tap
+   **Install**:
+
+   **→ [Install the script](https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js)**
+
+4. Open **[claude.ai/code](https://claude.ai/code)** and sign in.
+
+**Did it work?** The Send button in the composer turns Claude's coral color and
+the message text is visibly larger. If you see that, you're set.
+
+### On desktop
+
+Install [Violentmonkey](https://violentmonkey.github.io/) or Tampermonkey in any
+major browser, open the
+[install link](https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js),
+and confirm. The styling only activates below 900px wide, so a full-width desktop
+window shows the stock layout by design — narrow the window (or use your
+browser's responsive / device mode) to see the mobile fixes.
+
+### Updates
 
 The script declares `@updateURL` / `@downloadURL`, so your userscript manager
-picks up new versions on its normal update check — no need to reinstall.
+picks up new versions on its normal update check — you never reinstall. To pull
+the latest right away, open the manager's dashboard and tap **check for updates**.
+
+### If the fixes don't show up
+
+- **Narrow the window.** The script is scoped to `max-width: 900px` and does
+  nothing on a wide desktop window — that's intentional.
+- **Reload** claude.ai/code after installing.
+- **Check the manager is enabled** and the script is toggled on. On Firefox for
+  Android, tap the Violentmonkey icon — it should report **1** active script for
+  the page.
 
 ## Telemetry / diagnostics
 
