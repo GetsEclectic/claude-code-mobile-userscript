@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.90.0
+// @version      1.91.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2481,8 +2481,47 @@ window.__ccmFlags = (function () {
   pinAll();
   // Re-bind as the SPA mounts / remounts .epitaxy-root, and re-assert the pin
   // (a remount can arrive already-scrolled before any scroll event fires).
-  // Invalidate the cached root list first: a remount can swap the scroll shell.
-  new MutationObserver(function () { cachedRoots = null; bindRoots(); pinAll(); })
+  //
+  // PERF (v1.91): this observer used to run `cachedRoots = null; bindRoots();
+  // pinAll()` synchronously on EVERY childList mutation — uncoalesced, unlike
+  // every other observer in this file. Steady-state transcript streaming mutates
+  // the DOM dozens of times/sec, so it nulled-and-rebuilt the root list (a
+  // getComputedStyle ancestor walk — a forced style recalc) per streamed chunk,
+  // defeating the cache the comment above promised and making the whole UI lag
+  // while Claude is typing. Fix: (1) RAF-coalesce like the others, so a burst of
+  // mutations costs at most one pass per frame; (2) only do the expensive
+  // invalidate + rebind when the mount IDENTITY actually changes (a real
+  // remount / re-wrap), which is the only thing that can move the scroll shell —
+  // ordinary transcript growth leaves .epitaxy-root untouched, so the
+  // getComputedStyle walk stays out of the hot path entirely. pinAll() (cheap
+  // scrollTop reads off the cached list, no getComputedStyle) still runs each
+  // coalesced frame, preserving the header-pin invariant.
+  var lastMount = document.querySelector('.epitaxy-root');
+  var lastParent = lastMount && lastMount.parentElement;
+  var pending = false;
+  function resync() {
+    pending = false;
+    var mount = document.querySelector('.epitaxy-root');
+    var parent = mount && mount.parentElement;
+    // Recompute only when the mount itself OR its immediate parent changes
+    // identity — i.e. a real remount or a re-wrap of the scroll shell that the
+    // ancestor walk starts from. Both are O(1) reference checks (no
+    // getComputedStyle), so steady-state transcript streaming — where neither
+    // moves — never pays for the ancestor walk.
+    if (mount !== lastMount || parent !== lastParent) {
+      lastMount = mount;
+      lastParent = parent;
+      cachedRoots = null;        // the re-wrap may have swapped the scroll shell
+      bindRoots();
+    }
+    pinAll();
+  }
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(resync);
+  }
+  new MutationObserver(schedule)
     .observe(document.documentElement, { childList: true, subtree: true });
 })();
 
