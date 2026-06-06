@@ -20,6 +20,16 @@ The same session, on a phone-width viewport, without and with the script.
 Note the larger message text, the full-width session title (the repeated repo
 prefix is hidden), the tighter side margins, and the recolored Send button.
 
+## See it in action
+
+**The keyboard stays down when you open a session** — so you can read the history before you type. It only rises when you actually tap the composer.
+
+<img src="docs/keyboard.gif" width="300" alt="Opening a session — the soft keyboard stays down so the history stays readable">
+
+**Steer a running turn** — while a turn is streaming, the Send button becomes a "steer" action (the blue ↑), so you can redirect mid-turn instead of Stop → retype → Send.
+
+<img src="docs/steer.gif" width="300" alt="Steering a running turn with the blue steer button">
+
 ## What it changes
 
 Layout and readability:
