@@ -9,6 +9,10 @@ touching the desktop experience.
 Everything is scoped to phone widths (`max-width: 900px`) and to `claude.ai/code`,
 so a desktop visit — or any other site — is left completely alone.
 
+[![Install the script](https://img.shields.io/badge/Install%20the%20script-2ea44f?style=for-the-badge&logo=tampermonkey&logoColor=white)](https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js)
+
+*Tap to install — you'll need a userscript manager first ([2-minute setup](#install)).*
+
 ## Before / after
 
 The same session, on a phone-width viewport, without and with the script.
