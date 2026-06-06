@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.87.0
+// @version      1.88.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -437,9 +437,31 @@ window.__ccmStyleEl = GM_addStyle(`
      longer moves it (that broke on soft-nav / the Accept-edits toggle); instead it
      stays put for React to own, and we surface a proxy "+" in the input row. Tag
      the real one (data-ccm-realadd) and hide it so only the proxy shows. The proxy
-     forwards clicks to it, so the attach handler still fires from the real node. */
+     forwards clicks to it, so the attach handler still fires from the real node.
+
+     Do NOT use display:none here. The app's attach menu (Add files / Import GitHub
+     issue / Slash commands / Connectors) is a Radix popover that anchors to its
+     TRIGGER — the real "Add" button — via getBoundingClientRect. A display:none
+     node reports an all-zero {top:0,left:0,w:0,h:0} rect, so the popover anchored to
+     it floats to the VIEWPORT TOP-LEFT (Ben's 2026-06-06 screenshot: the menu
+     opened pinned to the top-left corner instead of by the composer). Instead make
+     the button visually hidden but still LAID OUT at its toolbar slot: a real
+     position (its toolbar x,y) keeps the popover anchored down by the composer where
+     the visible proxy "+" lives. width/height/padding/margin/border all collapse to
+     0 (no toolbar gap, no glyph), opacity:0 hides any sliver, overflow:hidden clips
+     the SVG, pointer-events:none means it never steals a tap from the proxy. */
   button[aria-label="Add"][data-ccm-realadd]:not([data-ccm-proxy]) {
-    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    flex: 0 0 0 !important;
+    opacity: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
   }
   /* Even with the box shrunk to 28px, a visible gap remained between the + and
      the composer text. That leftover is the text field's own left inset (now
