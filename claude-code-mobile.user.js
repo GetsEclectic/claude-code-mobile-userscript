@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.92.0
+// @version      1.93.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -88,20 +88,6 @@ window.__ccmStyleEl = GM_addStyle(`
     min-height: 0 !important;
     transform: scale(1.5) !important;
     transform-origin: center bottom !important;
-  }
-
-  /* 4c. The per-message "Read aloud" (TTS) button is a secondary affordance, but
-     rule 4 inflates it to a 40px square — the same footprint as the Send CTA — in
-     the message action row that sits directly above the composer, so it reads as a
-     co-equal primary action and competes for the eye (Ben 2026-06-09: "too
-     prominent … competes with the primary CTA"). Pin its min-* off rule 4's floor
-     so it shrinks back toward its native ~24px, and dim it so it recedes to a
-     clearly-secondary control. The [data-testid] selector (0,1,0) outranks rule
-     4's bare button selector (0,0,1), so this wins regardless of source order. */
-  [data-testid="epitaxy-read-aloud"], [aria-label="Read aloud"] {
-    min-width: 0 !important;
-    min-height: 0 !important;
-    opacity: 0.55 !important;
   }
 
   /* 5. Home Sessions / Pull-requests rows: stock claude.ai/code overlaps the
