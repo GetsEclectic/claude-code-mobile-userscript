@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.93.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close. Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
+// @version      1.94.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close (via interactive-widget=resizes-content on browsers that support it, Firefox Android 132+; falls back to the userland height pin). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -231,6 +231,12 @@ window.__ccmStyleEl = GM_addStyle(`
      --ccm-vvh and clip overflow so the app fits the area above the keyboard:
      header fixed at top, shrink-0 composer dock riding just above the keyboard,
      transcript scrolling between.
+
+     v1.94: this whole rule is DISARMED while the interactive-widget viewport
+     patch is active (window.__ccmIW — see the module after __ccmFlags): the
+     companion never adds .ccm-kb-open then, because the browser is resizing
+     the layout viewport natively. This rule is the fallback for ?ccmIW=0 /
+     pre-132 Firefox.
 
      CRITICAL: this MUST stay gated on .ccm-kb-open. An always-on version (the
      overflow:hidden + min-height:0 applied even with the keyboard down) collapses
@@ -709,7 +715,72 @@ window.__ccmFlags = (function () {
     drawerSync: f('ccmDrawerSync', true), // gates ccm-drawer-open class toggle
     noKbOnSwitch: f('ccmNoKbOnSwitch', true), // gates keyboard-down-on-session-switch
     steer: f('ccmSteer', true),         // gates the re-wired Stop->steer action button
+    iw: f('ccmIW', true),               // gates the interactive-widget viewport-meta patch (v1.94)
   };
+})();
+
+/* ────────────────────────────────────────────────────────────────────────
+   v1.94 keyboard fix at the platform layer: interactive-widget=resizes-content.
+
+   Firefox Android (132+) defaults to resizes-visual: when the soft keyboard
+   opens, only the VISUAL viewport shrinks — innerHeight / 100dvh stay at full
+   screen height, so the app's 100dvh-pinned layout keeps laying out under the
+   keyboard, and Firefox pans the visual viewport (vv.offsetTop jumping to
+   ~334) to chase the focused input. Every keyboard symptom this script fights
+   (composer behind keyboard, black gap, header carried off-top, drawer
+   Recents collapse) is downstream of that one default. Appending
+   interactive-widget=resizes-content to the viewport meta tells Firefox to
+   shrink the LAYOUT viewport instead, so the app fits itself above the
+   keyboard natively. On Chromium this is a no-op (already its behavior).
+
+   While the patched meta is live (window.__ccmIW truthy) the rule 11 height
+   pin stays disarmed — the platform is doing that job, and double-pinning
+   would re-clamp an already-shrunk layout. Kill switch from the phone
+   (reverts to the v1.93 userland pin, persists via localStorage):
+   open claude.ai/code?ccmIW=0 — and ?ccmIW=1 to re-enable. */
+(function () {
+  var qs = null;
+  try {
+    var v = new URLSearchParams(location.search).get('ccmIW');
+    if (v === '0') { localStorage.setItem('ccmIW', '0'); qs = false; }
+    else if (v === '1') { localStorage.removeItem('ccmIW'); qs = true; }
+  } catch (e) { /* localStorage can throw */ }
+  var on = qs !== null ? qs : window.__ccmFlags.iw;
+  if (!on) { window.__ccmIW = false; return; }
+  var MODE = 'resizes-content';
+  function patch() {
+    var m = document.querySelector('meta[name="viewport"]');
+    if (!m) {
+      if (!document.head) return false;
+      m = document.createElement('meta');
+      m.setAttribute('name', 'viewport');
+      m.setAttribute('content', 'width=device-width, initial-scale=1');
+      document.head.appendChild(m);
+    }
+    var c = m.getAttribute('content') || '';
+    if (c.indexOf('interactive-widget=' + MODE) !== -1) return true;
+    // Strip any existing interactive-widget value, then append ours.
+    c = c.replace(/,?\s*interactive-widget\s*=\s*[a-z-]+/i, '');
+    m.setAttribute('content', c + ', interactive-widget=' + MODE);
+    return true;
+  }
+  window.__ccmIW = patch();
+  /* @run-at document-start: <head>/the meta may not exist yet, and the SPA can
+     rewrite the meta later. Re-assert on mutations, RAF-coalesced like the
+     other observers in this script. */
+  var raf = 0;
+  new MutationObserver(function () {
+    if (raf) return;
+    raf = requestAnimationFrame(function () {
+      raf = 0;
+      window.__ccmIW = patch();
+    });
+  }).observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['content']
+  });
 })();
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -1419,7 +1490,10 @@ window.__ccmFlags = (function () {
     var kbOpen = (maxH - vv.height) > 150;
     // v1.45 bisect toggle: ccmRule11=0 disables the height pin entirely by
     // never adding ccm-kb-open (the sole switch arming rule 11's CSS).
-    de.classList.toggle('ccm-kb-open', kbOpen && window.__ccmFlags.rule11);
+    // v1.94: also disarmed while the interactive-widget viewport patch is
+    // live (__ccmIW) — the browser is shrinking the layout viewport itself,
+    // and pinning heights to --ccm-vvh on top of that double-clamps.
+    de.classList.toggle('ccm-kb-open', kbOpen && window.__ccmFlags.rule11 && !window.__ccmIW);
     // Body height = bottom edge of the visual viewport in layout coords. When
     // vv is anchored at the top of the layout viewport (offsetTop=0, the
     // normal case), this is just vv.height — same as before. But the C
