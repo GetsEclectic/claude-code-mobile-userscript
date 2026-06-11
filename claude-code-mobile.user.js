@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.94.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close (via interactive-widget=resizes-content on browsers that support it, Firefox Android 132+; falls back to the userland height pin). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
+// @version      1.95.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -16,6 +16,10 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.95: removed the userland keyboard-layout pin (rules 11/11b, --ccm-vvh,
+   scrollHold, unpan, scroll-pin, drawer-sync). The platform now handles layout
+   via interactive-widget=resizes-content (ccmIW module, added in v1.94).
 
    Keep the @media block free of the two-character sequence that closes a CSS
    comment: one stray occurrence inside a comment silently truncates the whole
@@ -218,89 +222,6 @@ window.__ccmStyleEl = GM_addStyle(`
     bottom: -8px !important;
     left: -18px !important;
     right: 0 !important;
-  }
-
-  /* 11. Soft keyboard handling. The app pins its whole layout to height:100dvh,
-     but dvh — like vh — tracks the browser's UA chrome, NOT the on-screen
-     keyboard. So when the keyboard opens the layout viewport stays full-height:
-     the bottom composer dock is left behind the keyboard, and reaching it scrolls
-     the header off the top. The companion script publishes the real visible
-     height (visualViewport API — the only thing that reflects the keyboard) as
-     --ccm-vvh, and adds the .ccm-kb-open class to <html> ONLY while the keyboard
-     is actually up. Pin the three height drivers (html, body, .epitaxy-root) to
-     --ccm-vvh and clip overflow so the app fits the area above the keyboard:
-     header fixed at top, shrink-0 composer dock riding just above the keyboard,
-     transcript scrolling between.
-
-     v1.94: this whole rule is DISARMED while the interactive-widget viewport
-     patch is active (window.__ccmIW — see the module after __ccmFlags): the
-     companion never adds .ccm-kb-open then, because the browser is resizing
-     the layout viewport natively. This rule is the fallback for ?ccmIW=0 /
-     pre-132 Firefox.
-
-     CRITICAL: this MUST stay gated on .ccm-kb-open. An always-on version (the
-     overflow:hidden + min-height:0 applied even with the keyboard down) collapses
-     the sidebar's flex-1 Recents list to zero height (blank sidebar) and clips
-     the composer's +/attachment and context popovers. Keyboard-down must be the
-     app's stock layout, untouched.
-
-     ALSO gated on :not(.ccm-drawer-open): the first-tap-opens-menu fix keeps the
-     composer focused (keyboard up) while the sidebar drawer opens, so .ccm-kb-open
-     is still set when the drawer is showing. With the height pin active, the
-     drawer's flex-1 Recents list collapses to zero (blank void under "Customize").
-     The companion below adds .ccm-drawer-open while the drawer is open; suspending
-     this height pin then restores the Recents list.
-
-     The height pin also extends down into the tiles-shell container chain to close
-     a React-mount race window. When a pre-existing session is opened with the
-     keyboard already up, the companion fires just after React mounts the session
-     view. Between mount and companion-fire, the inline-styled flex-item that serves
-     as the containing block for .tiles-shell (position:absolute) may not have
-     received the new height from the cascade yet. The session column inside
-     tiles-shell uses h-full (height:100%) all the way down, so a stale containing
-     block height produces a short column — transcript fills it, dock sits at
-     content-height, void below. Pinning tiles-shell > .h-full and its .flex-col
-     child directly to var(--ccm-vvh) short-circuits the cascade dependency and
-     ensures correct height during the race window. Both selectors use child
-     combinators (>) to hit only the two specific nodes in the tiles-shell subtree,
-     not arbitrary h-full / flex-col elements deeper in the transcript. */
-  html.ccm-kb-open:not(.ccm-drawer-open),
-  html.ccm-kb-open:not(.ccm-drawer-open) body.min-h-screen,
-  html.ccm-kb-open:not(.ccm-drawer-open) .epitaxy-root {
-    height: var(--ccm-vvh, 100dvh) !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-  }
-  html.ccm-kb-open:not(.ccm-drawer-open) .tiles-shell > .h-full,
-  html.ccm-kb-open:not(.ccm-drawer-open) .tiles-shell > .h-full > .flex-col {
-    height: calc(var(--ccm-vvh, 100dvh) - 18px) !important;
-    min-height: 0 !important;
-  }
-
-  /* 11b. Companion to rule 11 for the kb-open+drawer-open window. Rule 11
-     suspends on .ccm-drawer-open so the Recents list can render at full
-     height. But on Firefox Android the keyboard rise during drawer-open
-     produces a visual-viewport pan (vv.offsetTop jumps to ~334 to keep the
-     focused composer visible) because layout is unconstrained at 854px while
-     vv.height shrank to 520. The v1.44 window.scrollTo unpan is a no-op here:
-     deScrollHeight==deClientHeight, so the document has no scroll range to
-     consume the offset. Without intervention the pan can't be unwound and
-     the panned state persists after the drawer closes — that's the C
-     black-gap. Fix: pin html + body to vv.height (only, no +offsetTop) during
-     the drawer-open+kb-up window so layout matches the visible area and
-     Firefox has no reason to pan. Deliberately skip .epitaxy-root and the
-     inner .tiles-shell clamps from rule 11 — bisected empirically over RDP
-     against the live Firefox tab: every variant that clamped .epitaxy-root
-     broke the drawer's session-list first-open render (likely a virtualized
-     scroller keying its visible window off .epitaxy-root geometry); html +
-     body alone prevents the pan without disturbing the list. Uses a separate
-     CSS variable --ccm-vvh-drawer = vv.height (no offsetTop addition) — see
-     the sync() body for where it's set. */
-  html.ccm-kb-open.ccm-drawer-open,
-  html.ccm-kb-open.ccm-drawer-open body.min-h-screen {
-    height: var(--ccm-vvh-drawer, 100dvh) !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
   }
 
   /* 12. In-session title bar reads "[repo] / [session title]". The repo is
@@ -699,20 +620,14 @@ try {
   }
 } catch (e) { /* localStorage can throw in some sandboxes */ }
 
-/* v1.45 bisect toggles. Each defaults ON ('1'); flip OFF from the phone by
-   localStorage.setItem('ccmRule11','0') (etc), then reload. Read once at script
-   start so the user can toggle without page reload only by reloading. Reported
-   in ccmHist snapshots as `flags` so a dump tells us which path was live. */
+/* Feature flags. Read once at script start. Reported in ccmHist snapshots as
+   `flags` so a dump tells us which path was live. */
 window.__ccmFlags = (function () {
   function f(k, dflt) {
     try { var v = localStorage.getItem(k); return v === null ? dflt : v !== '0'; }
     catch (e) { return dflt; }
   }
   return {
-    rule11: f('ccmRule11', true),       // gates ccm-kb-open class toggle (height pin)
-    scrollHold: f('ccmScrollHold', true), // gates s.scrollTop += delta
-    unpan: f('ccmUnpan', true),         // gates window.scrollTo(_, sY + offsetTop)
-    drawerSync: f('ccmDrawerSync', true), // gates ccm-drawer-open class toggle
     noKbOnSwitch: f('ccmNoKbOnSwitch', true), // gates keyboard-down-on-session-switch
     steer: f('ccmSteer', true),         // gates the re-wired Stop->steer action button
     iw: f('ccmIW', true),               // gates the interactive-widget viewport-meta patch (v1.94)
@@ -725,19 +640,15 @@ window.__ccmFlags = (function () {
    Firefox Android (132+) defaults to resizes-visual: when the soft keyboard
    opens, only the VISUAL viewport shrinks — innerHeight / 100dvh stay at full
    screen height, so the app's 100dvh-pinned layout keeps laying out under the
-   keyboard, and Firefox pans the visual viewport (vv.offsetTop jumping to
-   ~334) to chase the focused input. Every keyboard symptom this script fights
-   (composer behind keyboard, black gap, header carried off-top, drawer
-   Recents collapse) is downstream of that one default. Appending
-   interactive-widget=resizes-content to the viewport meta tells Firefox to
-   shrink the LAYOUT viewport instead, so the app fits itself above the
-   keyboard natively. On Chromium this is a no-op (already its behavior).
+   keyboard. Appending interactive-widget=resizes-content to the viewport meta
+   tells Firefox to shrink the LAYOUT viewport instead, so the app fits itself
+   above the keyboard natively. On Chromium this is a no-op (already its
+   behavior). This is now the sole keyboard-layout path; the userland height
+   pin was removed in v1.95.
 
-   While the patched meta is live (window.__ccmIW truthy) the rule 11 height
-   pin stays disarmed — the platform is doing that job, and double-pinning
-   would re-clamp an already-shrunk layout. Kill switch from the phone
-   (reverts to the v1.93 userland pin, persists via localStorage):
-   open claude.ai/code?ccmIW=0 — and ?ccmIW=1 to re-enable. */
+   Kill switch from the phone: open claude.ai/code?ccmIW=0 (no fallback pin —
+   keyboard layout just reverts to browser default) — and ?ccmIW=1 to
+   re-enable. Persists via localStorage. */
 (function () {
   var qs = null;
   try {
@@ -891,13 +802,13 @@ window.__ccmFlags = (function () {
   // Compact, content-free layout snapshot — the heartbeat unit.
   function state() {
     try {
-      var vv = window.visualViewport, de = document.documentElement;
+      var vv = window.visualViewport;
       return {
         vv: vv ? Math.round(vv.height) : null,
         ih: window.innerHeight, iw: window.innerWidth,
         sy: Math.round(window.scrollY || 0),
-        kb: de.classList.contains('ccm-kb-open') ? 1 : 0,
-        dr: de.classList.contains('ccm-drawer-open') ? 1 : 0,
+        // v1.95: the kb/dr class fields died with the userland pin. Under
+        // resizes-content, ih shrinking below resting IS the keyboard signal.
         on: navigator.onLine ? 1 : 0,
       };
     } catch (e) { return null; }
@@ -1292,9 +1203,7 @@ window.__ccmFlags = (function () {
     var vv = window.visualViewport;
     var de = document.documentElement;
     var cs = getComputedStyle(de);
-    var vvh = cs.getPropertyValue('--ccm-vvh').trim() || '';
     var htmlH = parseFloat(cs.height) || null;
-    var guard = Math.max(0, (window.__ccmSidebarTapUntil || 0) - Date.now());
     var iw = window.innerWidth;
     var vh = vv ? vv.height : window.innerHeight;
     // Drain the event ring into the snapshot so each saved entry carries
@@ -1310,13 +1219,8 @@ window.__ccmFlags = (function () {
       dsT: Math.round(de.scrollTop || 0),
       bsH: Math.round(document.body ? document.body.scrollHeight : 0),
       deSH: Math.round(de.scrollHeight || 0),
-      vvh: vvh,
       htmlH: htmlH != null ? Math.round(htmlH) : null,
       max: window.__ccmMaxH != null ? window.__ccmMaxH : null,
-      kb: de.classList.contains('ccm-kb-open') ? 1 : 0,
-      dr: de.classList.contains('ccm-drawer-open') ? 1 : 0,
-      guard: guard,
-      // v1.45 — which bisect toggles were live for this snapshot.
       flags: window.__ccmFlags || null,
       // Full computed-style probes — the bug is in something we weren't
       // measuring before, so dump position/top/bottom/transform/zIndex.
@@ -1407,282 +1311,28 @@ window.__ccmFlags = (function () {
   }
 })();
 
-/* Companion to rule 11. Two jobs, both driven off the visualViewport API (the
-   only thing that reflects the soft keyboard; vh/dvh can't see it):
-
-   1. Detect whether the keyboard is up and toggle the .ccm-kb-open class on
-      <html>, which is the sole switch that arms rule 11. Detection compares the
-      current visible height against the keyboard-down baseline (maxH). That
-      baseline is seeded from window.innerHeight, NOT vv.height: the layout
-      viewport (innerHeight) doesn't shrink for the soft keyboard (the viewport
-      meta is resizes-visual, not interactive-widget=resizes-content) and is
-      immune to rule 11's html-height pin, so it's a stable keyboard-down anchor
-      even when a freshly-opened session auto-focuses the composer with the
-      keyboard already up (where seeding from vv.height would lock in the
-      keyboard-UP height and rule 11 would never arm). The keyboard steals
-      ~250-350px; UA chrome show/hide only moves ~60px, so a 150px threshold
-      cleanly separates the two. vv.height is the browser's own visible region,
-      so it's immune to the html height changes rule 11 makes — no feedback loop.
-   2. Publish that visible height as --ccm-vvh for rule 11 to size to, and hold
-      the transcript bottom in place: when the keyboard opens the app shrinks, so
-      the virtualized transcript loses height from the bottom and its bottom edge
-      slips behind the composer. Nudge the scroller's scrollTop by the height
-      delta to keep that content visible (symmetric on close).
-
-   Only listens to 'resize' — that's what the keyboard fires. (An earlier build
-   also synced on every 'scroll' event, which thrashed style recalc and made the
-   page laggy; the scroll listener did nothing useful since scrolling doesn't
-   change vv.height.) */
+/* Minimal keyboard-state tracker (v1.95). The userland height pin was removed
+   in v1.95 — interactive-widget=resizes-content (the ccmIW module above) lets
+   the platform handle layout. This tiny module keeps window.__ccmMaxH alive for
+   the debug snapshot's `max` field. Baseline: under resizes-content BOTH
+   innerHeight and vv.height shrink for the soft keyboard, so the resting
+   (keyboard-down) height is tracked as a running max — Math.max keeps the
+   tall value across keyboard cycles. A soft keyboard never changes innerWidth,
+   so a width delta re-baselines maxH to prevent a stale tall-context max from
+   making kbOpen read true permanently on a shorter layout context. */
 (function () {
   var vv = window.visualViewport;
   if (!vv) return;
-  var de = document.documentElement;
-  // Keyboard-down baseline: innerHeight (layout viewport) doesn't shrink for the
-  // soft keyboard and is immune to rule 11's pin, so it survives a session that
-  // opens with the keyboard already up. vv.height is the fallback if innerHeight
-  // is somehow smaller (e.g. desktop split views).
   function fullHeight() { return Math.max(window.innerHeight, vv.height); }
   var maxH = fullHeight();
-  var prevH = vv.height;
-  // Layout-viewport WIDTH at the last sync. A soft-keyboard event never changes
-  // innerWidth, so a width change means the layout context changed (the
-  // document-start desktop-ish viewport collapsing to claude.ai's mobile meta,
-  // or a nav/zoom/orientation change) — the cue to re-baseline maxH (see
-  // refreshVars). Without this, maxH (a running max) latches the tallest context
-  // ever seen and the keyboard reads "open" forever in shorter ones.
   var prevIW = window.innerWidth;
-  var wasOpen = false;
-  function findScroller() {
-    var m = document.querySelector('.epitaxy-markdown');
-    for (var n = m; n; n = n.parentElement) {
-      var oy = getComputedStyle(n).overflowY;
-      if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight + 4) {
-        return n;
-      }
-    }
-    return null;
-  }
-  // Shared state refresh: recompute the keyboard-open class and republish the
-  // viewport-height CSS vars from the CURRENT visualViewport. Crucially it does
-  // NO scroll mutation (no scrollTop nudge, no window.scrollTo), so it is safe to
-  // call from the high-frequency vv 'scroll' event as well as 'resize'. Returns
-  // kbOpen so the resize path can drive unpan/scrollHold off the same value.
-  function refreshVars() {
-    // Re-baseline the keyboard-down height when the layout WIDTH changes. maxH is
-    // a running max of fullHeight() so we remember the pre-keyboard full height on
-    // browsers where innerHeight shrinks with the keyboard too — but that max must
-    // not bleed across layout contexts. Telemetry (Ben's Firefox) caught the
-    // failure: at document-start the page is briefly desktop-ish (ih=1844/iw=980)
-    // before claude.ai's mobile viewport meta applies (ih=854/iw=454); maxH
-    // latched 1844 and never came down, so in-session (vv=854) the test
-    // (maxH - vv.height) = 990 > 150 pinned .ccm-kb-open ON with the keyboard
-    // DOWN — blank-bottom / clipped-top + a ResizeObserver-loop flood for minutes.
-    // A soft keyboard never changes innerWidth, so a width delta is an unambiguous
-    // "context changed, not a keyboard" signal: drop the stale max to the current
-    // full height. The real keyboard delta (vv shrinking at constant width) is
-    // untouched, so detection still fires normally.
-    if (window.innerWidth !== prevIW) {
-      prevIW = window.innerWidth;
-      maxH = fullHeight();
-    }
+  function update() {
+    if (window.innerWidth !== prevIW) { prevIW = window.innerWidth; maxH = fullHeight(); }
     maxH = Math.max(maxH, fullHeight());
     window.__ccmMaxH = maxH;
-    var kbOpen = (maxH - vv.height) > 150;
-    // v1.45 bisect toggle: ccmRule11=0 disables the height pin entirely by
-    // never adding ccm-kb-open (the sole switch arming rule 11's CSS).
-    // v1.94: also disarmed while the interactive-widget viewport patch is
-    // live (__ccmIW) — the browser is shrinking the layout viewport itself,
-    // and pinning heights to --ccm-vvh on top of that double-clamps.
-    de.classList.toggle('ccm-kb-open', kbOpen && window.__ccmFlags.rule11 && !window.__ccmIW);
-    // Body height = bottom edge of the visual viewport in layout coords. When
-    // vv is anchored at the top of the layout viewport (offsetTop=0, the
-    // normal case), this is just vv.height — same as before. But the C
-    // black-gap bug repros with vv.offsetTop jumping to ~334 (visualViewport
-    // gets scrolled WITHIN the layout viewport during menu→session→menu→
-    // session nav); body sized to vv.height alone ends 334px short of the
-    // visible bottom, and that gap renders black. Adding offsetTop closes it.
-    //
-    // De-dupe the WRITE (v1.80): vv 'scroll' fires every pixel during a pan /
-    // momentum-scroll, and rewriting --ccm-vvh to an identical value still
-    // dirties style and can feed the app's own ResizeObserver into a "loop
-    // completed with undelivered notifications" flood (telemetry caught this at
-    // v1.79 during active interaction). Only set the property when the computed
-    // px actually changes, so the high-frequency scroll path is a no-op whenever
-    // the visible geometry hasn't moved. A genuine keyboard close (height jumps
-    // back to full) still changes the value, so the var refreshes as before.
-    var vvh = (vv.height + vv.offsetTop);
-    if (vvh !== window.__ccmLastVvh) {
-      window.__ccmLastVvh = vvh;
-      de.style.setProperty('--ccm-vvh', vvh + 'px');
-    }
-    // Companion to rule 11b. Always set to vv.height alone (no offsetTop
-    // addition): the drawer-open pin needs layout == visible area so Firefox
-    // doesn't pan; --ccm-vvh's vv.height+offsetTop formula serves rule 11's
-    // closed-drawer case and is the wrong target here. Same de-dupe.
-    if (vv.height !== window.__ccmLastVvhDrawer) {
-      window.__ccmLastVvhDrawer = vv.height;
-      de.style.setProperty('--ccm-vvh-drawer', vv.height + 'px');
-    }
-    return kbOpen;
   }
-  function sync() {
-    // Rule 11 only applies below 900px; above it the class does nothing and the
-    // scroll-hold would nudge an unrelated scroller. Bail (and clear any armed
-    // state) so the desktop layout is never touched.
-    if (window.innerWidth > 900) {
-      if (wasOpen) { de.classList.remove('ccm-kb-open'); wasOpen = false; }
-      prevH = vv.height;
-      return;
-    }
-    // First-tap-opens-menu guard. While a tap on the sidebar toggle is in
-    // flight, freeze our reaction to the keyboard-close resize. The tap's click
-    // is confirmed to fire on touch (scripts/ptr_preventdefault_probe.py truth
-    // table), so the menu DID receive the click — but reacting to the resize
-    // here (nudging the scroller, releasing rule 11's height pin) moves content
-    // under the finger mid-gesture, and the browser then reclassifies the tap as
-    // a scroll and cancels the click, so the drawer only opened on the second
-    // tap. Holding the layout perfectly still through the tap lets the first
-    // click land. Armed unconditionally by the sidebar-tap handler below (NOT
-    // gated on ccm-kb-open) so it still fires if keyboard detection is off on a
-    // given device. Keep prevH current so the post-guard resize computes its
-    // delta from here — no scroll jump once the guard lifts.
-    if (Date.now() < (window.__ccmSidebarTapUntil || 0)) {
-      if (window.__ccmDbg) window.__ccmDbg.log('r11.guarded', {
-        vv: Math.round(vv.height),
-      });
-      prevH = vv.height;
-      return;
-    }
-    var kbOpen = refreshVars();
-    if (window.__ccmDbg) window.__ccmDbg.log('r11.sync', {
-      vv: Math.round(vv.height), max: maxH, kb: kbOpen ? 1 : 0,
-      off: Math.round(vv.offsetTop),
-    });
-    // v1.44: unwind the visual-viewport pan. When vv.offsetTop > 0 the
-    // browser has scrolled the visual viewport down within the layout
-    // viewport (typically keyboard-avoidance keeping the focused composer
-    // visible). Rule 11 grew body to fill the panned layout, but the body's
-    // grid layout then places the composer at varying positions inside the
-    // 918-px container — leaving 180–700px of empty dark body depending on
-    // content. Scrolling the document by vv.offsetTop pulls layout content
-    // up so that the focused element is in view via document scroll instead
-    // of visual-viewport pan; the browser then lets vv.offsetTop relax to 0.
-    // Guarded so it only fires once per offset change, to avoid a loop with
-    // any browser re-pan attempt; the next sync re-evaluates.
-    if (vv.offsetTop > 0 && kbOpen && window.__ccmFlags.unpan) {
-      var nextY = Math.round(window.scrollY + vv.offsetTop);
-      if (window.__ccmDbg) window.__ccmDbg.log('r11.unpan', {
-        off: Math.round(vv.offsetTop), sY: Math.round(window.scrollY), to: nextY,
-      });
-      window.scrollTo(window.scrollX, nextY);
-    }
-    var delta = prevH - vv.height; // > 0 when the keyboard opens (height shrinks)
-    prevH = vv.height;
-    // Only hold the transcript bottom across an actual keyboard transition.
-    // Gating on the delta size alone misfired on UA-chrome show/hide (~60-90px),
-    // which clamped near the bottom and drifted the transcript one way each cycle.
-    if ((kbOpen || wasOpen) && window.__ccmFlags.scrollHold) {
-      var s = findScroller();
-      if (s) s.scrollTop += delta;
-    }
-    wasOpen = kbOpen;
-  }
-  vv.addEventListener('resize', sync);
-  // v1.78: nudge-free reconcile on vv 'scroll'. The handler went resize-only in
-  // v1.77 (85e45b8) to kill the transcript-scroll drift the old full-sync scroll
-  // listener caused — it ran scrollHold's `scrollTop += delta` on every URL-bar
-  // pixel. But resize-only ALSO dropped the only path that re-synced state when a
-  // keyboard transition lands as a visualViewport PAN (offsetTop/height change
-  // delivered as 'scroll', no 'resize'). Telemetry then caught ccm-kb-open stuck
-  // ON for minutes at vv==innerHeight (keyboard down): rule 11's height-pin +
-  // overflow:hidden clamp the app shorter than the real viewport → blank space at
-  // the bottom, header clipped off the top, and the app's own ResizeObserver
-  // loops forever ("loop completed with undelivered notifications" flood).
-  // refreshVars() restores the re-sync WITHOUT the drift: it only republishes the
-  // CSS vars + class and never touches any scroller, so the URL-bar-pixel storm
-  // can't move the transcript. The width>900 / sidebar-tap guards mirror sync().
-  vv.addEventListener('scroll', function () {
-    if (window.innerWidth > 900) {
-      if (wasOpen) { de.classList.remove('ccm-kb-open'); wasOpen = false; }
-      return;
-    }
-    if (Date.now() < (window.__ccmSidebarTapUntil || 0)) return;
-    refreshVars();
-  });
-  sync();
-})();
-
-/* Companion to rule 11's :not(.ccm-drawer-open) guard. The first-tap-opens-menu
-   fix further down keeps the composer focused when the sidebar drawer opens (so
-   the click lands on the first tap), which means the keyboard stays up and
-   .ccm-kb-open lingers while the drawer is showing. With rule 11's height pin
-   still armed, the drawer's flex-1 Recents list collapses below the clamped
-   viewport and reads as a blank void under "Customize". Toggle .ccm-drawer-open
-   on <html> whenever the drawer is open so rule 11 suspends and the Recents
-   render at full height. Open state is read off the stable aria-expanded on the
-   "Open sidebar" button (true = open) — a discrete attribute, so it's immune to
-   the opacity transition the drawer panel animates through (computed opacity
-   would read an intermediate value mid-animation). Verified empirically: with
-   .ccm-kb-open set + drawer open, .epitaxy-root clamps to 400px (recents clipped)
-   without this class and returns to natural height with it. */
-(function () {
-  var de = document.documentElement;
-  function sync() {
-    var wasOpen = de.classList.contains('ccm-drawer-open');
-    var open = !!document.querySelector('[aria-label="Open sidebar"][aria-expanded="true"]');
-    // v1.45 bisect toggle: ccmDrawerSync=0 leaves the class off forever.
-    de.classList.toggle('ccm-drawer-open', open && window.__ccmFlags.drawerSync);
-    if (window.__ccmDbg && wasOpen !== open) window.__ccmDbg.log('drawer', {
-      from: wasOpen ? 1 : 0, to: open ? 1 : 0,
-    });
-    // Drawer just opened OR closed — both edges need a forced rule-11 re-sync.
-    // The rule-11 companion's first-tap guard (__ccmSidebarTapUntil) freezes
-    // sync() through the tap gesture, so the keyboard-dismiss resize that fires
-    // when the drawer takes focus is bailed out and never re-applied. That
-    // strands --ccm-vvh / --ccm-vvh-drawer / .ccm-kb-open at the SHORT
-    // keyboard-up height:
-    //   - On CLOSE: rule 11's height pin re-arms with the stale short --ccm-vvh,
-    //     leaving a black gap below the composer.
-    //   - On OPEN (the kb-up→tap-menu case): .ccm-kb-open lingers and rule 11b
-    //     (html.ccm-kb-open.ccm-drawer-open) pins html+body to the stale short
-    //     --ccm-vvh-drawer, so the drawer panel fills only ~60% of the screen and
-    //     the area the keyboard vacated renders as empty grey — the rest of the
-    //     page never re-lays-out. Once the guarded dismiss-resize is swallowed,
-    //     no further resize may fire, so the clamp persists indefinitely.
-    // Fix: on either transition, clear the guard (the tap has already succeeded —
-    // aria-expanded flipped — so the scroll-reclassification risk it protected
-    // against is past) and re-derive geometry from live state. A single immediate
-    // re-sync can still capture a mid-dismiss (short) height, so re-fire on a
-    // short ladder to catch the settled post-keyboard geometry even when the
-    // browser emits no further resize event of its own.
-    if (wasOpen !== open) {
-      var forceResync = function () {
-        window.__ccmSidebarTapUntil = 0;
-        try {
-          var vv = window.visualViewport;
-          if (vv && typeof vv.dispatchEvent === 'function') {
-            if (window.__ccmDbg) window.__ccmDbg.log('synth.resize', {
-              vv: vv ? Math.round(vv.height) : '-', edge: open ? 'open' : 'close',
-            });
-            vv.dispatchEvent(new Event('resize'));
-          }
-        } catch (e) { /* never let a sync race break the page */ }
-      };
-      forceResync();
-      setTimeout(forceResync, 150);
-      setTimeout(forceResync, 400);
-    }
-  }
-  var pending = false;
-  function schedule() {
-    if (pending) return;
-    pending = true;
-    requestAnimationFrame(function () { pending = false; sync(); });
-  }
-  new MutationObserver(schedule).observe(document.documentElement, {
-    attributes: true, attributeFilter: ['aria-expanded'], subtree: true,
-  });
-  sync();
+  vv.addEventListener('resize', update);
+  update();
 })();
 
 /* Companion to rule 18. Visually place the composer "+" (Add / attach) at the
@@ -1819,12 +1469,7 @@ window.__ccmFlags = (function () {
    reaches the menu. The drawer fails to open because content reflows under the
    finger mid-gesture (the soft keyboard closing the moment the composer blurs),
    so the browser reclassifies the tap as a scroll and CANCELS the already-fired
-   click. Prior builds attacked the reflow source: freeze our own rule-11 resize
-   reaction (layer 1 below) and preventDefault pointerdown to keep the composer
-   focused so the keyboard never closes (layer 2). But the keyboard close — and
-   therefore the browser's own native reflow — could not be stopped on the real
-   phone, so the native click kept getting eaten. v1.51 stops fighting the
-   reflow and stops depending on the native click reaching the menu at all.
+   click.
 
    v1.51 fix — drive the toggle with a PROGRAMMATIC click, immune to the
    tap-vs-scroll heuristic:
@@ -1842,23 +1487,15 @@ window.__ccmFlags = (function () {
      - Scoped to touch pointers on phone widths (<=900px) so desktop mouse and
        the tablet/desktop layout are untouched.
 
-   Layer 1 (the rule-11 freeze, window.__ccmSidebarTapUntil) is kept: even though
-   click delivery no longer depends on it, holding the layout still through the
-   tap keeps the drawer-open frame from janking. We do NOT blur/force the keyboard
-   down ourselves: opening the drawer moves focus into it (React focus-trap),
-   dropping the keyboard on its own. An earlier build that forced the keyboard
-   down reflowed a frame after the drawer opened and the drawer read it as an
-   outside tap, closing itself. */
+   We do NOT blur/force the keyboard down ourselves: opening the drawer moves
+   focus into it (React focus-trap), dropping the keyboard on its own. */
 (function () {
   var SEL = '[aria-label="Open sidebar"]';
   var sx = 0, sy = 0, tracking = false, fireOwn = false, ownFiredAt = 0;
 
-  // Layer 1: freeze rule-11's resize reaction through the tap (layout still).
   document.addEventListener('pointerdown', function (e) {
     var btn = e.target && e.target.closest && e.target.closest(SEL);
     if (!btn) { tracking = false; return; }
-    window.__ccmSidebarTapUntil = Date.now() + 700;
-    if (window.__ccmDbg) window.__ccmDbg.log('guard.arm', { ms: 700 });
     // Only take over click delivery for touch taps on phone widths; leave
     // desktop mouse / wide layouts on the native path.
     if (e.pointerType === 'touch' && window.innerWidth <= 900) {
@@ -2445,159 +2082,6 @@ window.__ccmFlags = (function () {
   });
 })();
 
-/* Root scroll-pin invariant (v1.59). The shared root cause behind the whole
-   top-bar-disappearance family: overflow:hidden hides the scrollbar and blocks
-   USER scrolling, but it does NOT reset an existing scrollTop and does NOT stop
-   the browser's own programmatic scroll-into-view from moving an element. The
-   app's layout is taller than the visible area whenever the soft keyboard is up
-   (100dvh tracks the layout viewport, which the keyboard doesn't shrink), so the
-   browser has slack to scroll a root container to keep the focused composer in
-   view — carrying the header, which lives at the top of that container, off the
-   top of the screen.
-
-   Three independent root containers can hold that scroll: <html> (window.scrollY
-   / documentElement.scrollTop), <body> (body.scrollTop), and .epitaxy-root. Rule
-   11's height clamp + the v1.44 unpan handled the <html>-scroll and visual-
-   viewport-pan vectors, but only while armed — and only for those two vectors.
-   The menu->session-switch-from-composer bug slipped through as <body>.scrollTop
-   reaching 333.9px while overflow:hidden was in force (RDP capture 2026-05-30:
-   menuY -324, scrollY 0, vvOffTop 0, bodyScrollTop 333.9). None of html/body/
-   .epitaxy-root is ever LEGITIMATELY scrolled — the transcript and the sidebar
-   Recents list are deeper nested scrollers that own their own overflow — so the
-   correct fix is an unconditional invariant, not another armed/disarmed clamp:
-   pin all three roots at scrollTop=0 always.
-
-   Capture-phase 'scroll' listeners snap each root back to 0 the instant the
-   browser scrolls it (capture so it's corrected before paint); a document-level
-   capture listener catches the modes where Firefox routes body scroll through
-   the document. Deliberately NOT gated on width or .ccm-kb-open: the gating
-   seams are exactly what let prior fixes miss states. Setting scrollTop=0 on an
-   already-0 / non-scrollable element is a no-op, so this is inert in the
-   keyboard-down and desktop layouts (nothing scrolls the roots there) and only
-   acts when something would have carried the header away.
-
-   Verified empirically over Firefox-Android RDP (2026-05-30): the broken kb-up+
-   drawer-open / stale-clamp state recurred dozens of times across 8+ session
-   navigations with the header pinned at y=10 in every frame (was -324 without
-   this), zero header-off-top frames — confirmed in both the experimental form
-   and this shipped form. */
-(function () {
-  function pin(el) {
-    if (!el) return;
-    if (el.scrollTop !== 0) el.scrollTop = 0;
-    if (el.scrollLeft !== 0) el.scrollLeft = 0;
-  }
-  // v1.90: the named-roots list (html/body/.epitaxy-root) went stale when the
-  // app re-wrapped its mount. The header [data-top-left] now lives inside a new
-  // flex shell — `.flex-1.min-h-0 … overflow-x-clip overflow-y-auto` — that is
-  // an ANCESTOR of .epitaxy-root, and .epitaxy-root itself is now
-  // overflow:visible (so pinning it is a no-op). That outer shell is the scroller
-  // the browser moves to reveal the focused composer when the keyboard is up,
-  // carrying the header off the top — the pin never touched it. Generalize:
-  // walk up from .epitaxy-root to <html> and treat every scrollable ancestor as
-  // a root. These ALL live outside .epitaxy-root, so none is ever the transcript
-  // or sidebar-Recents scroller (those are nested INSIDE it) — pinning them stays
-  // safe, and this self-heals if the app re-wraps the mount again.
-  // Cache the computed list; recompute only on DOM mutation (see observer below),
-  // so the per-scroll-frame path stays getComputedStyle-free.
-  var cachedRoots = null;
-  function scrollableAncestors() {
-    var out = [];
-    var el = document.querySelector('.epitaxy-root');
-    el = el && el.parentElement;
-    while (el && el !== document.documentElement && el !== document.body) {
-      var ov = getComputedStyle(el).overflowY;
-      if (ov === 'auto' || ov === 'scroll') out.push(el);
-      el = el.parentElement;
-    }
-    return out;
-  }
-  function roots() {
-    if (!cachedRoots) {
-      cachedRoots = [document.documentElement, document.body,
-                     document.querySelector('.epitaxy-root')]
-                    .concat(scrollableAncestors());
-    }
-    return cachedRoots;
-  }
-  function pinAll() { roots().forEach(pin); }
-  function isRoot(t) {
-    if (t === document || t === document.documentElement || t === document.body)
-      return true;
-    if (t && t.classList && t.classList.contains('epitaxy-root')) return true;
-    return roots().indexOf(t) !== -1;  // the scrollable outer-shell ancestors
-  }
-  // Snap a specific root back the moment the browser scrolls it.
-  function onScroll(e) {
-    var t = e.target;
-    if (isRoot(t)) {
-      pin(t === document ? document.scrollingElement : t);
-      // Belt-and-suspenders: a body scroll routed through document, or an
-      // .epitaxy-root remount, can leave a sibling root dirty. Cheap to sweep.
-      pinAll();
-    }
-  }
-  // document-start: body / .epitaxy-root may not exist yet. Bind on document
-  // (capture) so we catch scroll events from descendants that bubble up to it,
-  // and also bind directly to each root as it appears. The direct binds are
-  // belt-and-suspenders; the document capture listener is the load-bearing one.
-  document.addEventListener('scroll', onScroll, true);
-  var bound = new WeakSet();
-  function bindRoots() {
-    roots().forEach(function (el) {
-      if (el && !bound.has(el)) {
-        bound.add(el);
-        el.addEventListener('scroll', function () { pin(el); }, true);
-      }
-    });
-  }
-  bindRoots();
-  pinAll();
-  // Re-bind as the SPA mounts / remounts .epitaxy-root, and re-assert the pin
-  // (a remount can arrive already-scrolled before any scroll event fires).
-  //
-  // PERF (v1.91): this observer used to run `cachedRoots = null; bindRoots();
-  // pinAll()` synchronously on EVERY childList mutation — uncoalesced, unlike
-  // every other observer in this file. Steady-state transcript streaming mutates
-  // the DOM dozens of times/sec, so it nulled-and-rebuilt the root list (a
-  // getComputedStyle ancestor walk — a forced style recalc) per streamed chunk,
-  // defeating the cache the comment above promised and making the whole UI lag
-  // while Claude is typing. Fix: (1) RAF-coalesce like the others, so a burst of
-  // mutations costs at most one pass per frame; (2) only do the expensive
-  // invalidate + rebind when the mount IDENTITY actually changes (a real
-  // remount / re-wrap), which is the only thing that can move the scroll shell —
-  // ordinary transcript growth leaves .epitaxy-root untouched, so the
-  // getComputedStyle walk stays out of the hot path entirely. pinAll() (cheap
-  // scrollTop reads off the cached list, no getComputedStyle) still runs each
-  // coalesced frame, preserving the header-pin invariant.
-  var lastMount = document.querySelector('.epitaxy-root');
-  var lastParent = lastMount && lastMount.parentElement;
-  var pending = false;
-  function resync() {
-    pending = false;
-    var mount = document.querySelector('.epitaxy-root');
-    var parent = mount && mount.parentElement;
-    // Recompute only when the mount itself OR its immediate parent changes
-    // identity — i.e. a real remount or a re-wrap of the scroll shell that the
-    // ancestor walk starts from. Both are O(1) reference checks (no
-    // getComputedStyle), so steady-state transcript streaming — where neither
-    // moves — never pays for the ancestor walk.
-    if (mount !== lastMount || parent !== lastParent) {
-      lastMount = mount;
-      lastParent = parent;
-      cachedRoots = null;        // the re-wrap may have swapped the scroll shell
-      bindRoots();
-    }
-    pinAll();
-  }
-  function schedule() {
-    if (pending) return;
-    pending = true;
-    requestAnimationFrame(resync);
-  }
-  new MutationObserver(schedule)
-    .observe(document.documentElement, { childList: true, subtree: true });
-})();
 
 /* Fix: long-press -> "Select all" in the composer leaves NO native selection
    handles and NO Copy/Cut/Paste action bar on Android — the buttons are
