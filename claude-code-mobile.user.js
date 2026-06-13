@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.95.0
+// @version      1.96.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -16,6 +16,9 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.96: hide the "Claude Fable 5 is currently unavailable." service banner
+   above the composer (rule 27) — pure CSS off the announcement-link href.
 
    v1.95: removed the userland keyboard-layout pin (rules 11/11b, --ccm-vvh,
    scrollHold, unpan, scroll-pin, drawer-sync). The platform now handles layout
@@ -605,6 +608,19 @@ window.__ccmStyleEl = GM_addStyle(`
     flex: 1 1 100% !important;
     width: 100% !important;
     max-width: 100% !important;
+  }
+
+  /* 27. Suppress the "Claude Fable 5 is currently unavailable." service banner
+     that docks just above the composer. The banner is an aria-live="polite" flex
+     row; its one stable hook is the trailing "Learn more" TextLink, an anchor to
+     the fable announcement URL (anthropic.com/news/fable-mythos-access) — the
+     class names are all hashed/utility. :has() hides the whole row off that
+     anchor without catching other polite live regions (none carry that href).
+     Pure CSS, so it's CSP-safe via GM_addStyle and self-clears if Fable comes
+     back (banner gone -> nothing to match). To hide a different model's
+     unavailable banner later, broaden the href match. (Ben, 2026-06-13.) */
+  [aria-live="polite"]:has(> a[href*="fable-mythos-access"]) {
+    display: none !important;
   }
 }
 `);
