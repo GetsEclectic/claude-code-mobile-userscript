@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.96.0
+// @version      1.97.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -621,6 +621,21 @@ window.__ccmStyleEl = GM_addStyle(`
      unavailable banner later, broaden the href match. (Ben, 2026-06-13.) */
   [aria-live="polite"]:has(> a[href*="fable-mythos-access"]) {
     display: none !important;
+  }
+
+  /* 28. Per-message action toolbar: surface fork / revert (and Copy / More
+     options) on touch. claude.ai/code renders the toolbar below each message
+     at opacity-0 pointer-events-none and only flips it visible+tappable via
+     group-hover (desktop pointer hover) or focus-within. A touch device fires
+     neither, so the whole toolbar — including the More-options button that
+     opens the fork/revert popover — is permanently unreachable on the phone.
+     Match the toolbar by its hover-state utility class (the slash and colon are
+     literal inside the quoted attribute value) and pin it on. The popover that
+     More-options opens is portaled to the body, so once the button is tappable
+     the fork/revert items render normally. (Ben, 2026-06-14.) */
+  [class*="group-hover/msg:opacity-100"] {
+    opacity: 1 !important;
+    pointer-events: auto !important;
   }
 }
 `);
