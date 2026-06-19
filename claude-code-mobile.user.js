@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.97.0
+// @version      1.98.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -227,13 +227,24 @@ window.__ccmStyleEl = GM_addStyle(`
     right: 0 !important;
   }
 
-  /* 12. In-session title bar reads "[repo] / [session title]". The repo is
-     always the same one and steals horizontal room, so the title truncates
-     early. Hide the repo button and the "/" separator — they are the two direct
-     <span> children of the title bar's content wrapper; the session title lives
-     in a sibling <div class="...flex-1"> and is left untouched, so it reclaims
-     the full width. */
-  [data-top-left="true"] .draggable-none > span {
+  /* 12. In-session title bar reads "[session title] [repo pill] [branch pill]".
+     The repo pill is always the same repo and the branch pill ("Remote") steal
+     horizontal room, so the title truncates early — hide them to reclaim it.
+
+     claude.ai restructured this bar (Ben 2026-06-19: "most of the top bar is
+     hidden"). The old selector  data-top-left .draggable-none > span  now matches
+     TWO wrappers — the LEFT .draggable-none whose single span holds the
+     session-title button AND the repo pills together, and the RIGHT
+     .draggable-none whose single span holds the action buttons (artifacts /
+     background-tasks badges, Diff, Share, Session actions) — so the rule hid the
+     ENTIRE bar, leaving only the sidebar toggle.
+
+     The repo-pills group is the inner .epitaxy-titlebar-fade span NESTED inside
+     the title wrapper's outer .epitaxy-titlebar-fade span; the title button is a
+     non-fade sibling and the right section's fade span has no nested fade — so
+     the nested .epitaxy-titlebar-fade selector below hits only the repo pills,
+     leaving the title and the right-side actions visible. */
+  [data-top-left="true"] .epitaxy-titlebar-fade .epitaxy-titlebar-fade {
     display: none !important;
   }
 
