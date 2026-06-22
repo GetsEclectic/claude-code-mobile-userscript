@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.98.0
+// @version      1.99.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -246,6 +246,32 @@ window.__ccmStyleEl = GM_addStyle(`
      leaving the title and the right-side actions visible. */
   [data-top-left="true"] .epitaxy-titlebar-fade .epitaxy-titlebar-fade {
     display: none !important;
+  }
+
+  /* 12b. Even with the repo pills hidden (rule 12), the session title still
+     truncates early ("Lexo feedback fro…", Ben 2026-06-22) because the RIGHT
+     action cluster claims ~160px of the 370px bar. Measured (in-session,
+     412px viewport): the cluster is the .ml-auto group at x:239,w:160 and it
+     spends that width on (a) a dead pl-[24px] left gap reserved between the
+     title and the first action icon, and (b) three icon buttons each forced to
+     44px by rule 2 (Share, Session-actions) / their natural width. That left
+     the title only ~198px (x:41→239).
+
+     Reclaim it without dropping any action: zero the 24px dead gap (it's pure
+     padding, no tap-target cost), tighten the inter-button gap, and trim the
+     in-bar icon buttons from 44→36px. 36px is still a usable target at the
+     screen's top edge, and the icons themselves are only ~20px. Net ≈48px back
+     to the title. Scoped to the .ml-auto cluster inside the title bar so it
+     can't reach the 44px Share/Session targets anywhere else. The (0,2,1)
+     button selector outranks rule 2's (0,1,0), so it wins the min-width. */
+  [data-top-left="true"] .ml-auto {
+    padding-left: 4px !important;
+    gap: 2px !important;
+  }
+  [data-top-left="true"] .ml-auto button {
+    min-width: 0 !important;
+    width: 36px !important;
+    flex: 0 0 36px !important;
   }
 
   /* 13. The Send / Stop button is the primary composer action. Give it a 30px
