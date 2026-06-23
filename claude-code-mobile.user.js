@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.100.0
+// @version      1.101.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -786,7 +786,29 @@ window.__ccmFlags = (function () {
     var template = menu.querySelector('[role="menuitem"]');
     if (!template) return;
 
+    // Some cluster actions the menu ALREADY exposes natively (e.g. when a task
+    // is running the menu shows its own "Background tasks" item; the bar also
+    // shows a "N background tasks" badge). Forwarding those would double them up
+    // (Ben 2026-06-23: "Background tasks is in the menu twice now"). So skip any
+    // cluster button whose label shares a meaningful word with an existing
+    // native item. Capture native texts BEFORE inserting ours (no relocated
+    // items exist yet — guarded above). Diff / Share have no native counterpart
+    // so they still forward; the count badges, which the menu covers natively,
+    // do not.
+    var nativeText = Array.prototype.map.call(
+      menu.querySelectorAll('[role="menuitem"]'),
+      function (i) { return (i.textContent || '').toLowerCase(); }
+    );
+    function alreadyInMenu(label) {
+      var words = label.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/)
+        .filter(function (w) { return w.length >= 4; });
+      return words.some(function (w) {
+        return nativeText.some(function (t) { return t.indexOf(w) !== -1; });
+      });
+    }
+
     actions.forEach(function (a) {
+      if (alreadyInMenu(a.label)) return; // menu already exposes this action
       var it = document.createElement('div');
       it.setAttribute('role', 'menuitem');
       it.setAttribute('data-ccm-relocated', '1');
