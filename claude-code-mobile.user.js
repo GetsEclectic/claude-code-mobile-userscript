@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.99.0
+// @version      1.100.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -272,6 +272,24 @@ window.__ccmStyleEl = GM_addStyle(`
     min-width: 0 !important;
     width: 36px !important;
     flex: 0 0 36px !important;
+  }
+
+  /* 12c. Even trimmed (rule 12b), the right action cluster still spends ~3 icon
+     slots (Diff, Share, and a background-tasks / artifacts badge when present)
+     on what the title needs (Ben 2026-06-23: "move the three buttons into the
+     ... menu so there's more space for the title"). Those actions already have a
+     natural home: the "Session actions" kebab dropdown. So hide every cluster
+     child EXCEPT the kebab and let the companion JS below forward each hidden
+     button into the dropdown as a menu item — the kebab is then the only icon in
+     the bar and the title gets the full reclaimed width.
+
+     The cluster is the .epitaxy-titlebar-fade span inside .ml-auto; its direct
+     children are the action buttons. :not([aria-label="Session actions"]) spares
+     the kebab; everything else (Diff button, Share button, badge wrappers) goes.
+     The hidden buttons stay in the DOM, so the JS can still fire their real React
+     onClick via a programmatic .click(). */
+  [data-top-left="true"] .ml-auto > span > :not([aria-label="Session actions"]) {
+    display: none !important;
   }
 
   /* 13. The Send / Stop button is the primary composer action. Give it a 30px
@@ -700,6 +718,115 @@ window.__ccmFlags = (function () {
     steer: f('ccmSteer', true),         // gates the re-wired Stop->steer action button
     iw: f('ccmIW', true),               // gates the interactive-widget viewport-meta patch (v1.94)
   };
+})();
+
+/* Relocate the top-bar action icons into the "Session actions" kebab menu.
+
+   Rule 12c (CSS) hides every action-cluster child except the kebab, reclaiming
+   the bar width for the session title. This IIFE keeps those actions reachable:
+   when the kebab dropdown opens, it prepends one forwarding menu item per hidden
+   cluster button (Diff, Share, and any background-tasks / artifacts badge that
+   happens to be present). Tapping an item fires the real button's React onClick
+   via a programmatic .click() — the same hide-real + forward-click proxy pattern
+   used for the composer "+" above — then closes the menu.
+
+   Why this shape:
+   - The hidden buttons are still in the DOM (display:none), so .click() still
+     dispatches a real bubbling event that React's root listener handles.
+   - We identify "the session menu" by latching a flag on a capture-phase click
+     of the kebab, then claiming the next [role="menu"] that appears — i18n-proof
+     and independent of the menu's item labels.
+   - Menu items are cloned from a real item's className so they inherit the
+     native popup styling (hover fill, height, padding).
+   - We close the menu by re-clicking the kebab toggle, NOT by dispatching Escape
+     — Escape is Claude Code's stop-generation key (see the drawer-dismiss IIFE),
+     and only if the menu is still open, so we never accidentally re-open it. */
+(function () {
+  var KEBAB = '[aria-label="Session actions"]';
+  var pendingMenu = false;
+
+  // Latch when the kebab is tapped so we can claim the menu it spawns.
+  document.addEventListener('click', function (e) {
+    var t = e.target && e.target.closest && e.target.closest(KEBAB);
+    if (t) pendingMenu = true;
+  }, true);
+
+  function realButtons(kebab) {
+    // The cluster span is the kebab's parent; its other children are the hidden
+    // action buttons. Return each one's clickable element + a label.
+    var span = kebab.parentElement;
+    if (!span) return [];
+    var out = [];
+    Array.prototype.forEach.call(span.children, function (c) {
+      if (c === kebab || c.contains(kebab)) return;
+      var btn = (c.tagName === 'BUTTON') ? c : c.querySelector('button');
+      if (!btn) return;
+      var label = (btn.getAttribute('aria-label') || btn.textContent || '').trim();
+      if (!label) return;
+      out.push({ btn: btn, label: label, svg: btn.querySelector('svg') });
+    });
+    return out;
+  }
+
+  function closeMenu() {
+    requestAnimationFrame(function () {
+      if (!document.querySelector('[role="menu"]')) return; // app already closed it
+      var k = document.querySelector(KEBAB);
+      if (k) k.click(); // re-click toggle (never Escape)
+    });
+  }
+
+  function inject(menu) {
+    if (menu.querySelector('[data-ccm-relocated]')) return; // already done
+    var kebab = document.querySelector(KEBAB);
+    if (!kebab) return;
+    var actions = realButtons(kebab);
+    if (!actions.length) return;
+    var list = menu.querySelector('.flex-1.min-h-0') || menu; // item container
+    var template = menu.querySelector('[role="menuitem"]');
+    if (!template) return;
+
+    actions.forEach(function (a) {
+      var it = document.createElement('div');
+      it.setAttribute('role', 'menuitem');
+      it.setAttribute('data-ccm-relocated', '1');
+      it.tabIndex = -1;
+      it.className = template.className; // inherit native popup-item styling
+      var span = document.createElement('span');
+      span.className = 'flex-1 min-w-0 truncate';
+      span.textContent = a.label;
+      it.appendChild(span);
+      if (a.svg) {
+        var ic = a.svg.cloneNode(true);
+        ic.classList.add('shrink-0');
+        it.appendChild(ic);
+      }
+      it.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        a.btn.click(); // fire the real React onClick on the hidden button
+        closeMenu();
+      });
+      list.insertBefore(it, list.firstChild);
+    });
+  }
+
+  var pend = false;
+  function schedule() {
+    if (pend) return;
+    pend = true;
+    requestAnimationFrame(function () {
+      pend = false;
+      if (!pendingMenu) return;
+      var menu = document.querySelector('[role="menu"]');
+      if (!menu) return;
+      pendingMenu = false;
+      try { inject(menu); } catch (e) { /* never break the native menu */ }
+    });
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true,
+  });
 })();
 
 /* ────────────────────────────────────────────────────────────────────────
