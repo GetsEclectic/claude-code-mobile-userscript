@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.102.0
+// @version      1.103.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -559,7 +559,11 @@ window.__ccmStyleEl = GM_addStyle(`
      corner still falls through to the button (the badge sits inside rule 10's
      hit-slop). Amber reads as "attention" against both the dark and light bar.
      Scoped here under @media so a desktop visit never shows it; the companion
-     also gates on the same media query and removes the chip off-phone. */
+     also gates on the same media query and removes the chip off-phone.
+     v1.103: two tiers - with unseen output the chip is amber and reads
+     "unread/total" (2/7); when every waiting session has been viewed the
+     companion adds .ccm-idle-badge--seen and the chip shows just the total in
+     muted grey, so the amber only ever means "something new for you". */
   aside.dframe-sidebar [aria-label="Open sidebar"] .ccm-idle-badge {
     position: absolute !important;
     top: -7px !important;
@@ -579,6 +583,9 @@ window.__ccmStyleEl = GM_addStyle(`
     pointer-events: none !important;
     box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35) !important;
     z-index: 5 !important;
+  }
+  aside.dframe-sidebar [aria-label="Open sidebar"] .ccm-idle-badge.ccm-idle-badge--seen {
+    background: #6b7280 !important;
   }
 
   /* 24. Steer cue for the re-wired action button. Mid-turn the bottom-right
@@ -2008,8 +2015,13 @@ window.__ccmFlags = (function () {
    v1.102 also surfaces the API's `unread` flag (true when the session has
    events Ben hasn't viewed): a waiting row that is ALSO unread gets its
    idle-age label restyled amber/bold - "done and you haven't looked" pops,
-   "done but already reviewed" stays muted. The badge count is unchanged
-   (all waiting sessions, read or not).
+   "done but already reviewed" stays muted.
+
+   v1.103 - two-tier badge (Ben's call 2026-07-11): with unread waiting
+   sessions the chip is amber "unread/total" (e.g. 2/7); with waiting sessions
+   that have all been viewed it shows just the total on a muted grey chip
+   (.ccm-idle-badge--seen). Amber now always means "something new". The
+   waiting total still counts every ready/awaiting session, read or not.
 
    Headers: the endpoint 400s without anthropic-version and 404s without the
    org uuid. The org uuid is harvested from a URL the app has already fetched
@@ -2182,6 +2194,11 @@ window.__ccmFlags = (function () {
     try { v = parseInt(localStorage.getItem(KEY), 10); } catch (e) { v = NaN; }
     return isNaN(v) ? 0 : v;
   }
+  // How many waiting sessions are unread (UKEY holds name -> 1 for exactly
+  // the waiting-AND-unread set, so its key count IS the badge numerator).
+  function unreadCount() {
+    return Object.keys(unreadCached()).length;
+  }
 
   // The org uuid appears in many app-issued URLs (/api/organizations/<uuid>,
   // /bootstrap/<uuid>). Harvest it from a request the app has already made, or
@@ -2213,8 +2230,14 @@ window.__ccmFlags = (function () {
       return;
     }
 
+    // v1.103: two-tier badge. With unseen output waiting the chip is amber and
+    // reads "unread/total" (e.g. 2/7); when everything waiting has already
+    // been viewed it shows just the total in muted grey - still a count of
+    // sessions holding the ball, but no longer shouting for attention.
     var n = cached();
-    var label = n > 99 ? '99+' : String(n);
+    var u = unreadCount();
+    var cap = function (x) { return x > 99 ? '99+' : String(x); };
+    var label = u > 0 ? cap(u) + '/' + cap(n) : cap(n);
     var badge = btn.querySelector('.ccm-idle-badge');
     if (n > 0) {
       if (!badge) {
@@ -2223,10 +2246,17 @@ window.__ccmFlags = (function () {
         btn.appendChild(badge);
       }
       if (badge.textContent !== label) badge.textContent = label;
+      var seen = u === 0;
+      if (badge.classList.contains('ccm-idle-badge--seen') !== seen) {
+        badge.classList.toggle('ccm-idle-badge--seen', seen);
+      }
     } else if (badge) {
       badge.remove();
     }
   }
+  // Expose for harness verification (claude_web_dom_dump probes can seed the
+  // localStorage counts and force a repaint without waiting on a refresh).
+  window.__ccmPaintBadge = paint;
 
   function statesCached() {
     try { return JSON.parse(localStorage.getItem(MKEY)) || {}; }
