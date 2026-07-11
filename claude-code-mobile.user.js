@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.103.0
+// @version      1.104.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2023,6 +2023,47 @@ window.__ccmFlags = (function () {
    (.ccm-idle-badge--seen). Amber now always means "something new". The
    waiting total still counts every ready/awaiting session, read or not.
 
+   v1.104 - a session with a live BACKGROUND task no longer reads idle (Ben
+   2026-07-11: the open session showed the app's own "1 running task"
+   indicator while our pipeline stamped it idle-aged, counted it waiting, and
+   downgraded its dot). Three changes, each measured live first:
+     1. FLIP-BASELINE bg detection replaces the v1.102 cross-poll-advance
+        heuristic. That heuristic needed updated_at to advance between two
+        consecutive polls whose PRIOR poll was already non-working, and its
+        sticky window decayed after FRESH_MS (3 min) - while measured bg emit
+        gaps run 13-256s, so a live task flapped to "ready" whenever it went
+        quiet across a poll pair. New rule: persist f = updated_at AS OBSERVED
+        on the first poll where the bucket is non-working (it already includes
+        the end-of-turn bump, so "done" reporting stays instant); any later
+        updated_at > f while the bucket is still non-working is new event flow
+        = background activity => working, held while the last emit is within
+        BG_FRESH_MS (6 min > the 256s max observed gap). f carries unchanged
+        across polls and clears when the bucket returns to working, so
+        detection needs any ONE emit after the flip, not an advance inside a
+        single poll pair. Known trade-offs: a task silent > 6 min still reads
+        ready until it emits (list endpoint has no task field - reverified
+        2026-07-11: detail object has none either, /tasks-style endpoints 404,
+        events can't be tailed); a stray late server bump after the flip reads
+        working for <= 6 min.
+     2. THE OPEN SESSION TRUSTS THE APP'S OWN "N running task(s)" INDICATOR
+        (the one in Ben's screenshot). The app computes it client-side from
+        the event log it already holds, so it is authoritative and instant -
+        exactly the signal the list API lacks. When it shows >= 1, the open
+        session is forced working at paint time: dot Running, no idle-age
+        label, badge counts exclude it. Text-scan (no stable hook exists on
+        that element), memoized 1s, attributed to a session by longest
+        cached-title prefix match against the header.
+     3. DOT MARKUP CAUGHT UP WITH THE APP (captured live 2026-07-11): list
+        rows now render working as a STATIC status-dot[data-kind="running"]
+        (aria "Running"; ready rows say "Unread response"), not the dframe
+        triple. dotState recognizes the new kind, DOT.working injects it, and
+        paintDots never downgrades an app-drawn data-kind="running" dot - it
+        is bucket-driven server state fresher than our <=45s-old cache
+        (correlated snapshot: dots matched status_bucket for every row).
+        Legacy dframe animations still downgrade (the v1.102 stale-Running
+        fix). The in-session header's "Merged" chip is the app's git state
+        for the session's branch - true information, deliberately untouched.
+
    Headers: the endpoint 400s without anthropic-version and 404s without the
    org uuid. The org uuid is harvested from a URL the app has already fetched
    (performance resource entries / page HTML); anthropic-version is the public
@@ -2050,7 +2091,7 @@ window.__ccmFlags = (function () {
   var MKEY = 'ccmSessionStates';   // name -> 'ready' | 'awaiting' (override targets)
   var AKEY = 'ccmSessionAges';     // name -> updated_at epoch ms (idle-age labels)
   var UKEY = 'ccmSessionUnread';   // name -> 1 (waiting AND not yet viewed)
-  var PKEY = 'ccmSessionPrev';     // name -> {t: updated_at ms, b: bucket, a: last-advance ms}
+  var PKEY = 'ccmSessionPrev';     // name -> {t: updated_at ms, b: bucket, f: flip-baseline ms}
   // Put-away / placeholder statuses never count, regardless of turn state.
   var DROP = { pending: 1, archived: 1, deleted: 1 };
   // Freshness window: a session that is actively running a turn bumps
@@ -2059,6 +2100,12 @@ window.__ccmFlags = (function () {
   // with headroom for a long in-flight tool call that briefly stops bumping,
   // and well above any client/server clock skew.
   var FRESH_MS = 180000;
+  // Background-activity hold: how long after its last observed emit a session
+  // with updated_at advanced past the flip baseline keeps reading "working".
+  // Measured bg emit gaps run 13-256s (2026-06-03 + 2026-07-11), so 6 min
+  // covers the longest observed gap with ~40% headroom; FRESH_MS (3 min) was
+  // the flap the v1.104 rework removes.
+  var BG_FRESH_MS = 360000;
 
   function lastActive(s) {
     var u = s && (s.updated_at || s.last_active_at || s.modified_at);
@@ -2092,12 +2139,13 @@ window.__ccmFlags = (function () {
   //   null       - archived / deleted / pending / completed. Ignore.
   // v1.102: trust the server's status_bucket first - it flips the instant a
   // turn ends, where the v1.84 freshness gate kept a just-finished session
-  // "working" for up to FRESH_MS. A non-working bucket is overridden back to
-  // working only when updated_at advanced across polls while the bucket was
-  // ALREADY non-working (background-task activity, the 2026-06-03 case),
-  // sticky for FRESH_MS past the last observed advance. `prev` is this
-  // session's {t, b, a} entry from the prior poll (undefined on first sight);
-  // the caller persists the returned entry via sessionPrevEntry().
+  // "working" for up to FRESH_MS. v1.104: a non-working bucket is overridden
+  // back to working by the FLIP-BASELINE rule (bgActiveAt below) - any
+  // updated_at advance past the baseline snapshotted when the bucket was
+  // first seen non-working is background-task event flow (the 2026-06-03 /
+  // 2026-07-11 case). `prev` is this session's {t, b, f} entry from the prior
+  // poll (undefined on first sight); the caller persists the returned entry
+  // via sessionPrevEntry().
   function sessionState(s, prev, nowMs) {
     if (!s) return null;
     if (DROP[s.session_status]) return null;
@@ -2111,27 +2159,39 @@ window.__ccmFlags = (function () {
     return freshnessState(s); // bucket absent/unknown - v1.84 fallback
   }
 
-  // Last wall-clock time we saw bg-style activity: updated_at advancing while
-  // the PRIOR poll's bucket was already non-working. An advance on the poll
-  // where the bucket flips away from 'working' is the end-of-turn bump, not a
-  // background task - prev.b === 'working' excludes it.
-  function lastBgAdvance(s, prev, nowMs) {
+  // Flip baseline: updated_at as observed on the FIRST poll where the bucket
+  // was non-working (a flip away from working, or first sight of the
+  // session). That observation already contains the end-of-turn bump, so a
+  // truly-finished session never advances past it and "done" reporting stays
+  // instant. Carried unchanged while the bucket stays non-working.
+  function flipBaseline(s, prev) {
     var t = lastActive(s);
-    var advanced = prev && !isNaN(t) && prev.t && t > prev.t &&
-                   prev.b && prev.b !== 'working';
-    return advanced ? nowMs : ((prev && prev.a) || 0);
+    var seen = isNaN(t) ? 0 : t;
+    if (!prev || !prev.b || prev.b === 'working') return seen;
+    return prev.f || seen; // prev.f absent on entries written before v1.104
   }
+  // Background activity: the bucket says the turn ended, but updated_at has
+  // advanced past the flip baseline - some task is still emitting events -
+  // and the last emit is recent (BG_FRESH_MS, sized to observed bg emit
+  // gaps). Unlike the v1.102 cross-poll heuristic this needs any ONE emit
+  // after the flip, whenever a poll happens to see it, not an advance within
+  // a single consecutive poll pair.
   function bgActiveAt(s, prev, nowMs) {
-    var a = lastBgAdvance(s, prev, nowMs);
-    return a > 0 && (nowMs - a) < FRESH_MS;
+    var t = lastActive(s);
+    var f = flipBaseline(s, prev);
+    return !isNaN(t) && f > 0 && t > f && (nowMs - t) < BG_FRESH_MS;
   }
-  // The history entry to persist for the next poll.
+  // The history entry to persist for the next poll. f is only meaningful
+  // while the bucket is a known non-working one; a working (or unknown)
+  // bucket clears it so the next flip re-snapshots.
   function sessionPrevEntry(s, prev, nowMs) {
     var t = lastActive(s);
+    var b = s.status_bucket || null;
+    var nonWorking = b && b !== 'working' && BUCKET_STATE.hasOwnProperty(b);
     return {
       t: isNaN(t) ? ((prev && prev.t) || 0) : t,
-      b: s.status_bucket || null,
-      a: lastBgAdvance(s, prev, nowMs),
+      b: b,
+      f: nonWorking ? flipBaseline(s, prev) : 0,
     };
   }
 
@@ -2236,6 +2296,13 @@ window.__ccmFlags = (function () {
     // sessions holding the ball, but no longer shouting for attention.
     var n = cached();
     var u = unreadCount();
+    // v1.104: the open session's live "N running tasks" indicator overrides a
+    // waiting classification — it isn't holding the ball, it's working.
+    var dw = domWorkingName();
+    if (dw && isWaitingState(statesCached()[dw])) {
+      n = Math.max(0, n - 1);
+      if (unreadCached()[dw]) u = Math.max(0, u - 1);
+    }
     var cap = function (x) { return x > 99 ? '99+' : String(x); };
     var label = u > 0 ? cap(u) + '/' + cap(n) : cap(n);
     var badge = btn.querySelector('.ccm-idle-badge');
@@ -2257,6 +2324,11 @@ window.__ccmFlags = (function () {
   // Expose for harness verification (claude_web_dom_dump probes can seed the
   // localStorage counts and force a repaint without waiting on a refresh).
   window.__ccmPaintBadge = paint;
+  // Classifier hooks so the Tier-2 suite can exercise the flip-baseline
+  // background-task logic deterministically (fixed nowMs, synthetic prev).
+  window.__ccmSessionState = sessionState;
+  window.__ccmSessionPrevEntry = sessionPrevEntry;
+  window.__ccmDomWorkingName = domWorkingName;
 
   function statesCached() {
     try { return JSON.parse(localStorage.getItem(MKEY)) || {}; }
@@ -2286,44 +2358,103 @@ window.__ccmFlags = (function () {
     return Math.floor(h / 24) + 'd';
   }
 
-  // The exact markup the app draws for each dot state (captured live via
-  // ccm_drawer_dots_probe.py), so an injected dot is byte-identical to the
-  // native ones — animation and colour come from the app's own global classes
-  // (.dframe-dot, .status-dot[data-kind]).
+  // The exact markup the app draws for each dot state, so an injected dot is
+  // byte-identical to the native ones - colour/animation come from the app's
+  // own global classes (.status-dot[data-kind]). Recaptured live 2026-07-11:
+  // list rows now render working as a STATIC status-dot[data-kind="running"]
+  // (aria "Running"), not the old dframe triple.
+  // data-ccm marks a dot WE injected, so the downgrade guard below can tell
+  // an app-drawn running dot (trusted, fresher than our cache) from our own
+  // (ours must stay downgradeable when the state moves on). Inert attribute -
+  // the app styles purely off .status-dot[data-kind].
   var DOT = {
-    working: { aria: 'Running',
-      html: '<span class="inline-flex size-3 items-center justify-center gap-[2px] leading-none" aria-hidden="true">' +
-            '<span class="dframe-dot"></span><span class="dframe-dot"></span><span class="dframe-dot"></span></span>' },
-    ready:    { aria: 'Ready',          html: '<span class="status-dot" data-kind="ready"></span>' },
-    awaiting: { aria: 'Awaiting input', html: '<span class="status-dot" data-kind="awaiting"></span>' },
+    working:  { aria: 'Running',        html: '<span class="status-dot" data-ccm="1" data-kind="running"></span>' },
+    ready:    { aria: 'Ready',          html: '<span class="status-dot" data-ccm="1" data-kind="ready"></span>' },
+    awaiting: { aria: 'Awaiting input', html: '<span class="status-dot" data-ccm="1" data-kind="awaiting"></span>' },
   };
-  // Which state is a status span currently rendering?
+  // Which state is a status span currently rendering? The legacy dframe
+  // triple (pre-2026-07 app markup, still possible mid-turn) also means
+  // working.
   function dotState(el) {
     if (el.querySelector('.dframe-dot')) return 'working';
     var sd = el.querySelector('.status-dot');
     if (sd) {
       var k = sd.getAttribute('data-kind');
+      if (k === 'running') return 'working';
       if (k === 'awaiting' || k === 'ready') return k;
     }
     return null;
   }
+  // App-drawn STATIC running dot (the new bucket-driven markup, not one we
+  // injected ourselves)? Server state fresher than our <=45s-old cache -
+  // never downgrade it. Legacy dframe animations are client-side and can go
+  // stale after a turn ends, so those still downgrade (the v1.102 fix), as
+  // do our own injected dots.
+  function isAppRunningDot(el) {
+    var sd = el.querySelector('.status-dot');
+    return !!sd && sd.getAttribute('data-kind') === 'running' &&
+           !sd.hasAttribute('data-ccm');
+  }
+  // v1.104: the app's own "N running task(s)" indicator, rendered inside the
+  // OPEN session view, is the one authoritative live background-task signal
+  // (computed client-side from the event log; the list API exposes nothing -
+  // reverified 2026-07-11). When it shows >= 1, the open session is forced
+  // 'working' at read time: dot, idle-age label, and badge counts all consult
+  // this. No stable hook exists on the element, so it's a text scan (cheap:
+  // one indexOf per text node), memoized for a second, and attributed to a
+  // session by longest cached-title prefix match against the header text
+  // ([data-top-left] renders "<title><repo>" concatenated).
+  var domTaskMemo = { at: 0, name: null };
+  function domWorkingName() {
+    var now = Date.now();
+    if (now - domTaskMemo.at < 1000) return domTaskMemo.name;
+    domTaskMemo.at = now;
+    domTaskMemo.name = null;
+    if (!document.body) return null;
+    // The indicator's text node is EXACTLY "N running task(s)" - require a
+    // full-node match so a chat message that merely mentions the phrase
+    // (inside a longer sentence) can't force the override.
+    var found = false;
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    var t;
+    while ((t = walker.nextNode())) {
+      var s = t.textContent;
+      if (s && s.indexOf('running task') !== -1 &&
+          /^\s*[1-9]\d*\s+running tasks?\s*$/i.test(s)) { found = true; break; }
+    }
+    if (!found) return null;
+    var tl = document.querySelector('[data-top-left="true"]');
+    var header = tl ? tl.textContent : '';
+    if (!header) return null;
+    var map = statesCached();
+    var best = null;
+    for (var nm in map) {
+      if (header.lastIndexOf(nm, 0) === 0 && (!best || nm.length > best.length)) best = nm;
+    }
+    domTaskMemo.name = best;
+    return best;
+  }
+
   // Reconcile each recents status dot to the session's TRUE state (cached map).
   // Bidirectional: we DOWNGRADE a stale "Running" dot to ready/awaiting when a
-  // turn has actually ended, and UPGRADE an idle/ready dot to "Running" when the
-  // connected-proxy says the session has live background work. Idempotent — we
-  // only rewrite when the rendered state differs from the desired one, so we
-  // never fight a correct app dot or restart its running animation.
+  // turn has actually ended, and UPGRADE an idle/ready dot to "Running" when
+  // background work is live. Idempotent - we only rewrite when the rendered
+  // state differs from the desired one, so we never fight a correct app dot.
   function paintDots() {
     if (!window.matchMedia(MQ).matches) return;   // phone sheet only
     var map = statesCached();
+    var dw = domWorkingName();
     var dots = document.querySelectorAll('span[role="status"]');
     for (var i = 0; i < dots.length; i++) {
       var el = dots[i];
       var name = rowName(el);
       if (!name) continue;                  // sr-only / unlabelled status spans
-      var want = map[name];
+      var want = (dw && name === dw) ? 'working' : map[name];
       if (!want || !DOT[want]) continue;    // no opinion on this session
       if (dotState(el) === want) continue;  // already correct
+      // Never fight the app's own bucket-driven static running dot - it is
+      // fresher server state than our cache (v1.104).
+      if (want !== 'working' && isAppRunningDot(el)) continue;
       el.setAttribute('aria-label', DOT[want].aria);
       el.innerHTML = DOT[want].html;
     }
@@ -2352,6 +2483,7 @@ window.__ccmFlags = (function () {
     var map = statesCached();
     var ages = agesCached();
     var unread = unreadCached();
+    var dw = domWorkingName();   // v1.104: live bg task => not idle, no label
     var dots = document.querySelectorAll('span[role="status"]');
     for (var i = 0; i < dots.length; i++) {
       var el = dots[i];
@@ -2360,7 +2492,7 @@ window.__ccmFlags = (function () {
       var btn = rowMainButton(el);
       if (!btn) continue;
       var lbl = btn.querySelector('.ccm-idle-age');
-      var state = map[name];
+      var state = (dw && name === dw) ? 'working' : map[name];
       var ts = ages[name];
       if ((state === 'ready' || state === 'awaiting') && ts) {
         var text = humanizeAge(Date.now() - ts);
