@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.101.0
+// @version      1.102.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -640,6 +640,15 @@ window.__ccmStyleEl = GM_addStyle(`
     opacity: 0.8 !important;
     white-space: nowrap !important;
     pointer-events: none !important;
+  }
+  /* 25b. Waiting row the API marks unread (finished/blocked with output Ben
+     hasn't viewed yet): the idle-age label goes amber + bold, matching the
+     rule-23 badge, so "done and unseen" pops against already-reviewed rows,
+     which keep the muted grey above. Amber reads on both dark and light. */
+  [data-row-main-button] .ccm-idle-age.ccm-unread {
+    color: #d97706 !important;
+    font-weight: 700 !important;
+    opacity: 1 !important;
   }
 
   /* 26. Side panel (plan / file / diff) full-width on phones. The detail panel
@@ -1971,17 +1980,51 @@ window.__ccmFlags = (function () {
    silent longer than FRESH_MS (3 min) can't be told apart from a finished session
    on the list endpoint, so it reads ready until it emits again and re-freshens.
 
+   v1.102 - the API grew a server-side classification, status_bucket, and we
+   trust it FIRST (measured live 2026-07-11 via ccm_bucket_probe.py):
+     - Observed values: working (session_status running), review_ready (done,
+       output waiting), blocked (needs Ben's input), completed (archived).
+     - It flips IMMEDIATELY at turn end: three sessions caught 19-52s after
+       finishing/blocking already carried review_ready / blocked - while the
+       v1.84 freshness gate would have called every one "working" for up to
+       FRESH_MS (3 min), because the end-of-turn event bumps updated_at. That
+       3-minute "done but still says Running" lag was the main idle/done
+       reporting defect this version fixes.
+   Mapping: working=>working, review_ready=>ready, blocked/failed=>awaiting,
+   completed=>drop. The v1.84 freshness classifier remains as the FALLBACK for
+   sessions with a missing/unknown bucket (API-drift guard).
+
+   Background-task caveat (the 2026-06-03 case v1.84 was built for): a
+   foreground-idle session with a live bg task may carry a non-working bucket
+   while updated_at keeps advancing as the task emits events. So a non-working
+   bucket is OVERRIDDEN to working when updated_at ADVANCED across polls while
+   the bucket was ALREADY non-working on the prior poll (that's bg activity;
+   sticky for FRESH_MS after the last observed advance so sub-poll-rate
+   emitters don't flap). The advance seen on the poll where the bucket flips
+   AWAY from working is just the end-of-turn bump and does NOT count - which is
+   exactly what keeps "done" reporting instant. Per-session {ts, bucket,
+   lastAdvance} history lives in localStorage (PKEY), pruned to live sessions.
+
+   v1.102 also surfaces the API's `unread` flag (true when the session has
+   events Ben hasn't viewed): a waiting row that is ALSO unread gets its
+   idle-age label restyled amber/bold - "done and you haven't looked" pops,
+   "done but already reviewed" stays muted. The badge count is unchanged
+   (all waiting sessions, read or not).
+
    Headers: the endpoint 400s without anthropic-version and 404s without the
    org uuid. The org uuid is harvested from a URL the app has already fetched
    (performance resource entries / page HTML); anthropic-version is the public
    pinned date. credentials:include reuses the logged-in cookie.
 
-   Cadence: the payload is ~1.3MB (archived sessions dominate and the API
-   ignores filter params), so we DON'T poll per-DOM-mutation. We refetch on an
-   interval and when the tab regains focus/visibility — cheap and current
-   enough for a count that changes on the minute scale. The latest count is
-   cached in localStorage so the badge paints instantly on the next load and
-   never blanks while a refetch is in flight or fails.
+   Cadence: the payload is ~380KB / 200 sessions (measured 2026-07-11; archived
+   sessions dominate and the API still ignores every status-filter param -
+   statuses/status/status_buckets/exclude_archived all returned the full set;
+   only `limit` is honored, and result order isn't a contract we want to lean
+   on), so we DON'T poll per-DOM-mutation. We refetch on an interval and when
+   the tab regains focus/visibility - cheap and current enough for a count that
+   changes on the minute scale. The latest count is cached in localStorage so
+   the badge paints instantly on the next load and never blanks while a refetch
+   is in flight or fails.
 
    Badge painting is decoupled from counting: a debounced MutationObserver
    re-stamps the chip whenever the SPA remounts the toggle button, reading the
@@ -1994,6 +2037,8 @@ window.__ccmFlags = (function () {
   var KEY = 'ccmIdleCount';
   var MKEY = 'ccmSessionStates';   // name -> 'ready' | 'awaiting' (override targets)
   var AKEY = 'ccmSessionAges';     // name -> updated_at epoch ms (idle-age labels)
+  var UKEY = 'ccmSessionUnread';   // name -> 1 (waiting AND not yet viewed)
+  var PKEY = 'ccmSessionPrev';     // name -> {t: updated_at ms, b: bucket, a: last-advance ms}
   // Put-away / placeholder statuses never count, regardless of turn state.
   var DROP = { pending: 1, archived: 1, deleted: 1 };
   // Freshness window: a session that is actively running a turn bumps
@@ -2016,15 +2061,74 @@ window.__ccmFlags = (function () {
     return !isNaN(t) && (Date.now() - t) < FRESH_MS;
   }
 
-  // Classify a session by what it actually wants from Ben (see block comment):
-  //   'working'  — turn in progress: running + a FRESH updated_at. Leave alone.
-  //   'awaiting' — asked Ben something (requires_action / needs_action set).
-  //   'ready'    — turn ended, output waiting (review_ready / failed / idle).
-  //   null       — archived / deleted / pending / unknown. Ignore.
-  // The freshness gate comes FIRST so a genuinely-running session is never
-  // mislabelled by a post_turn_summary that lingered from a prior turn — the
-  // v1.67 failure mode on background / autonomous sessions.
-  function sessionState(s) {
+  // Server-side classification (v1.102): status_bucket -> our state. failed is
+  // defensive (never observed live; a failed turn is ball-in-Ben's-court).
+  // completed only appears on archived sessions, which DROP already excludes,
+  // but map it to null anyway in case it ever shows up unarchived.
+  var BUCKET_STATE = {
+    working: 'working',
+    review_ready: 'ready',
+    blocked: 'awaiting',
+    failed: 'awaiting',
+    completed: null,
+  };
+
+  // Classify a session (see block comment for the full evidence trail):
+  //   'working'  - turn or background task in progress. Leave alone.
+  //   'awaiting' - asked Ben something (blocked / requires_action).
+  //   'ready'    - turn ended, output waiting (review_ready / failed / idle).
+  //   null       - archived / deleted / pending / completed. Ignore.
+  // v1.102: trust the server's status_bucket first - it flips the instant a
+  // turn ends, where the v1.84 freshness gate kept a just-finished session
+  // "working" for up to FRESH_MS. A non-working bucket is overridden back to
+  // working only when updated_at advanced across polls while the bucket was
+  // ALREADY non-working (background-task activity, the 2026-06-03 case),
+  // sticky for FRESH_MS past the last observed advance. `prev` is this
+  // session's {t, b, a} entry from the prior poll (undefined on first sight);
+  // the caller persists the returned entry via sessionPrevEntry().
+  function sessionState(s, prev, nowMs) {
+    if (!s) return null;
+    if (DROP[s.session_status]) return null;
+    var bucket = s.status_bucket;
+    if (bucket && BUCKET_STATE.hasOwnProperty(bucket)) {
+      if (bucket === 'working') return 'working';
+      var mapped = BUCKET_STATE[bucket];
+      if (mapped && bgActiveAt(s, prev, nowMs)) return 'working';
+      return mapped;
+    }
+    return freshnessState(s); // bucket absent/unknown - v1.84 fallback
+  }
+
+  // Last wall-clock time we saw bg-style activity: updated_at advancing while
+  // the PRIOR poll's bucket was already non-working. An advance on the poll
+  // where the bucket flips away from 'working' is the end-of-turn bump, not a
+  // background task - prev.b === 'working' excludes it.
+  function lastBgAdvance(s, prev, nowMs) {
+    var t = lastActive(s);
+    var advanced = prev && !isNaN(t) && prev.t && t > prev.t &&
+                   prev.b && prev.b !== 'working';
+    return advanced ? nowMs : ((prev && prev.a) || 0);
+  }
+  function bgActiveAt(s, prev, nowMs) {
+    var a = lastBgAdvance(s, prev, nowMs);
+    return a > 0 && (nowMs - a) < FRESH_MS;
+  }
+  // The history entry to persist for the next poll.
+  function sessionPrevEntry(s, prev, nowMs) {
+    var t = lastActive(s);
+    return {
+      t: isNaN(t) ? ((prev && prev.t) || 0) : t,
+      b: s.status_bucket || null,
+      a: lastBgAdvance(s, prev, nowMs),
+    };
+  }
+
+  // v1.84 classifier, retained as the fallback when status_bucket is missing
+  // or carries a value we don't know (API-drift guard). The freshness gate
+  // comes FIRST so a genuinely-running session is never mislabelled by a
+  // post_turn_summary that lingered from a prior turn — the v1.67 failure
+  // mode on background / autonomous sessions.
+  function freshnessState(s) {
     if (!s) return null;
     var st = s.session_status;
     if (DROP[st]) return null;
@@ -2055,9 +2159,8 @@ window.__ccmFlags = (function () {
 
   // A session is "waiting on Ben" (counts toward the idle badge) when its turn
   // has ended — i.e. it is ready or awaiting, not working.
-  function isWaiting(s) {
-    var st = sessionState(s);
-    return st === 'ready' || st === 'awaiting';
+  function isWaitingState(state) {
+    return state === 'ready' || state === 'awaiting';
   }
 
   // Given the app's per-session status <span role="status">, climb to the row
@@ -2131,6 +2234,14 @@ window.__ccmFlags = (function () {
   }
   function agesCached() {
     try { return JSON.parse(localStorage.getItem(AKEY)) || {}; }
+    catch (e) { return {}; }
+  }
+  function unreadCached() {
+    try { return JSON.parse(localStorage.getItem(UKEY)) || {}; }
+    catch (e) { return {}; }
+  }
+  function prevCached() {
+    try { return JSON.parse(localStorage.getItem(PKEY)) || {}; }
     catch (e) { return {}; }
   }
   // Humanize an idle duration: minutes under an hour, then hours, then days.
@@ -2210,6 +2321,7 @@ window.__ccmFlags = (function () {
     if (!window.matchMedia(MQ).matches) return;   // phone sheet only
     var map = statesCached();
     var ages = agesCached();
+    var unread = unreadCached();
     var dots = document.querySelectorAll('span[role="status"]');
     for (var i = 0; i < dots.length; i++) {
       var el = dots[i];
@@ -2228,6 +2340,12 @@ window.__ccmFlags = (function () {
           btn.appendChild(lbl);
         }
         if (lbl.textContent !== text) lbl.textContent = text;
+        // Waiting AND unread => amber/bold label ("done and you haven't
+        // looked"); already-viewed waiting rows keep the muted grey.
+        var wantUnread = !!unread[name];
+        if (lbl.classList.contains('ccm-unread') !== wantUnread) {
+          lbl.classList.toggle('ccm-unread', wantUnread);
+        }
       } else if (lbl) {
         lbl.remove();
       }
@@ -2256,22 +2374,33 @@ window.__ccmFlags = (function () {
       var n = 0;
       var map = {};
       var ages = {};
+      var unread = {};
+      var prev = prevCached();
+      var nextPrev = {};   // rebuilt each poll => prunes archived/deleted rows
+      var nowMs = Date.now();
       for (var i = 0; i < arr.length; i++) {
         var s = arr[i];
-        if (isWaiting(s)) n++;
-        var state = sessionState(s);
         var nm = s && (s.name || s.title || s.session_name);
+        var pe = nm ? prev[nm] : null;
+        var state = sessionState(s, pe, nowMs);
+        if (isWaitingState(state)) n++;
         // Record every actionable state (working/ready/awaiting) so paintDots
         // can both upgrade and downgrade. null (archived/deleted/pending) stays
         // out of the map so those rows are left exactly as the app drew them.
         if (nm && DOT[state]) map[nm] = state;
-        // Cache the last-active timestamp so paintAges can show a live idle age.
+        // Cache the last-active timestamp so paintAges can show a live idle age,
+        // the unread flag so it can highlight not-yet-viewed waiting rows, and
+        // the {ts, bucket, advance} history the bg-activity override needs.
         var ts = lastActive(s);
         if (nm && !isNaN(ts)) ages[nm] = ts;
+        if (nm && isWaitingState(state) && s.unread) unread[nm] = 1;
+        if (nm && state) nextPrev[nm] = sessionPrevEntry(s, pe, nowMs);
       }
       try { localStorage.setItem(KEY, String(n)); } catch (e) {}
       try { localStorage.setItem(MKEY, JSON.stringify(map)); } catch (e) {}
       try { localStorage.setItem(AKEY, JSON.stringify(ages)); } catch (e) {}
+      try { localStorage.setItem(UKEY, JSON.stringify(unread)); } catch (e) {}
+      try { localStorage.setItem(PKEY, JSON.stringify(nextPrev)); } catch (e) {}
       paint();
       paintDots();
       paintAges();
@@ -2293,6 +2422,9 @@ window.__ccmFlags = (function () {
   paintAges();    // instant: stamp idle ages from the cached timestamps
   refresh();      // then reconcile against the API
   setInterval(refresh, POLL_MS);
+  // Ages tick up over time even when nothing mutates (a drawer left open has
+  // no DOM churn, so the MutationObserver alone would freeze the labels).
+  setInterval(paintAges, 30000);
   window.addEventListener('focus', refresh);
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') refresh();
