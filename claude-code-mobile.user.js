@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.104.0
+// @version      1.105.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -155,10 +155,11 @@ window.__ccmStyleEl = GM_addStyle(`
     padding-left: 4px !important;
     padding-right: 12px !important;
   }
-  /* Tighten the vertical gaps between branch bar, composer and toolbar. */
-  .epitaxy-chat-column {
-    gap: 8px !important;
-  }
+  /* v1.105: the old .epitaxy-chat-column { gap: 8px } tightener is retired. The
+     app restructured the composer to nest .epitaxy-prompt directly under
+     .epitaxy-composer-width — a flex column whose native gap is already 6px,
+     tighter than our old 8px — so the rule is both dead (class gone) and no
+     longer wanted. Don't re-anchor it: fighting the native 6px would loosen. */
 
   /* 8. The branch / PR / diff bar above the composer eats vertical space partly
      because rules 1 & 4 inflate its controls to 16px / 40px. It's glanceable,
@@ -340,15 +341,17 @@ window.__ccmStyleEl = GM_addStyle(`
      1 & 4 inflate its controls to 16px / 40px, making it the largest, tallest
      text on screen. Give it the same compact treatment: drop the controls back
      to 13px and let them collapse to natural height, and trim the row's own
-     4px (py-[4px]) padding. Scoped under .epitaxy-chat-column so it can't reach
-     a like-classed row elsewhere; that container holds the single py-[4px]
-     toolbar in-session. */
-  .epitaxy-chat-column [class*="py-[4px]"] {
+     4px (py-[4px]) padding. Scoped under .epitaxy-composer-width so it can't
+     reach a like-classed row elsewhere; that dock holds the single py-[4px]
+     toolbar in-session (v1.105: was .epitaxy-chat-column before the app's
+     composer restructure removed that class; live probe confirmed the toolbar
+     now sits directly under .epitaxy-composer-width). */
+  .epitaxy-composer-width [class*="py-[4px]"] {
     padding-top: 1px !important;
     padding-bottom: 1px !important;
   }
-  .epitaxy-chat-column [class*="py-[4px]"] button,
-  .epitaxy-chat-column [class*="py-[4px]"] [role="button"] {
+  .epitaxy-composer-width [class*="py-[4px]"] button,
+  .epitaxy-composer-width [class*="py-[4px]"] [role="button"] {
     min-height: 0 !important;
     font-size: 13px !important;
   }
@@ -498,9 +501,12 @@ window.__ccmStyleEl = GM_addStyle(`
      every message, which reads as a too-large gap between a turn and the next one.
      Give it the bottom-toolbar treatment (rule 16): let the controls collapse back
      to natural height. The row's pt-[4px] hook scopes this to the meta row;
-     .epitaxy-chat-column keeps it off like-classed rows outside the transcript. */
-  .epitaxy-chat-column [class*="pt-[4px]"] button,
-  .epitaxy-chat-column [class*="pt-[4px]"] [role="button"] {
+     .epitaxy-transcript-width keeps it off like-classed rows outside the
+     transcript (v1.105: was .epitaxy-chat-column before the composer restructure
+     removed that class; live probe confirmed every pt-[4px] "Show message
+     actions" row now sits under .epitaxy-transcript-width). */
+  .epitaxy-transcript-width [class*="pt-[4px]"] button,
+  .epitaxy-transcript-width [class*="pt-[4px]"] [role="button"] {
     min-height: 0 !important;
     min-width: 0 !important;
   }
@@ -521,7 +527,7 @@ window.__ccmStyleEl = GM_addStyle(`
   /* 22. AskUserQuestion card: cap height so it never fills the screen, and make
      its body scrollable so all option text + Submit/Skip are reachable without
      the transcript being pushed off-screen. The card container is
-     .epitaxy-approval-card (same stable epitaxy- naming as .epitaxy-chat-column
+     .epitaxy-approval-card (same stable epitaxy- naming as .epitaxy-composer-width
      etc.), confirmed via --ancestry [aria-label="Dismiss question"]: it is the
      first non-button, non-span ancestor with meaningful size, and it is the
      natural scroll host because it wraps title, all option rows, the free-text
