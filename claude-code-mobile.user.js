@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.107.0
+// @version      1.108.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1944,22 +1944,40 @@ window.__ccmFlags = (function () {
    context / Pin as chapter) right over the native selection bar — reported
    2026-07-18, "the custom menu comes up when I try to select text." That menu
    is NOT raised by a `contextmenu` event (Gecko's long-press context menu IS,
-   and the block above already kills it) — it's Radix's own pointer long-press,
-   which fires no contextmenu event, so the capture block can't see it.
+   and the block above already kills it) — it's the app's own long-press, which
+   fires no contextmenu event, so the capture block can't see it.
 
-   We can't cleanly cancel Radix's long-press timer from outside, and blocking
+   Ground truth (dumped from the live app 2026-07-18): the app's menus are
+   Base UI (`data-base-ui-focusable`, `data-cds="Menu"`), NOT Radix. The
+   [role="menu"] node is itself `position: relative`; it's placed by an ancestor
+   `div[role="presentation"]` at `position: absolute; z-index: 120` (Base UI's
+   positioner). The menu is NOT modal — no scroll-lock, no focus guards, body
+   stays `pointer-events: auto` — so hiding the positioner with display:none is
+   clean and needs no teardown. (v1.107 wrongly assumed Radix: it required the
+   menu node itself to be position fixed/absolute and looked for a Radix wrapper,
+   so it matched nothing and never fired — hence "didn't work".)
+
+   We can't cleanly cancel the app's long-press timer from outside, and blocking
    pointer events on the message would break tap/scroll/selection. Instead we
    watch for the menu appearing and, if it was NOT opened by a deliberate tap or
    keystroke, hide it — so a long-press just selects text (native bar stays) and
-   the menu never gets in the way. The SAME menu opened intentionally by tapping
-   the ⋮ More-options button (rule 28) is preserved: a real pointerup/click on a
-   button-like opener, or a recent keydown (the composer "/" command menu, @-
-   mentions, etc.), arms a short "intentional" window that exempts the next menu.
+   the menu never gets in the way.
 
-   Scoped tightly: only a freshly-inserted, floating (position fixed/absolute)
-   [role="menu"] is a candidate — structural role=menu nodes and tooltips are
-   left alone. Hide (display:none) rather than remove, so we never removeChild a
-   node React is about to unmount itself. Never dispatches Escape (that's Claude
+   Two guards keep this surgical, so the SAME menu opened intentionally by
+   tapping the ⋮ More-options button (rule 28) — and every other menu — is
+   preserved:
+     1. Intent gate keyed on the pointer TARGET. A tap/click/pointer on an
+        opener CONTROL (button / link / menuitem) arms a short exempt window; a
+        long-press lands on transcript TEXT (a <p>, not a control), so it never
+        arms — robust whether or not a long-press emits a click on release. A
+        keydown also arms (the composer "/" command menu, @-mentions).
+     2. Content scope. Only a menu whose items are the per-message actions
+        (Copy message / Copy as Markdown / Pin as chapter / Attach message as
+        context) is ever a candidate; the Session-actions menu, the "/" command
+        menu, tooltips, etc. can never be hidden even if the intent gate slips.
+
+   Hide (display:none) rather than remove, so we never removeChild a node the
+   framework is about to unmount itself. Never dispatches Escape (that's Claude
    Code's stop-generation key). Gated by localStorage ccmNoLongPressMenu (set to
    '0' to disable this suppression). */
 (function () {
@@ -1967,51 +1985,77 @@ window.__ccmFlags = (function () {
   try { flagOn = localStorage.getItem('ccmNoLongPressMenu') !== '0'; } catch (e) {}
   if (!flagOn) return;
 
+  // Intent gate: a menu opened right after a deliberate interaction with an
+  // OPENER control (or a keystroke) is wanted and exempt. Keying on the target
+  // — not just "a pointerup happened" — is what separates a ⋮ tap (target is a
+  // button) from a long-press (target is message text), regardless of whether
+  // the long-press emits a trailing click.
   var intentionalUntil = 0;
-  function arm() { intentionalUntil = Date.now() + 600; }
-  // The long-press menu opens WHILE the finger is still held down — i.e. BEFORE
-  // this gesture's pointerup — so a menu that appears right after a pointerup,
-  // click, or keystroke was opened deliberately (⋮ tap, "/" command menu,
-  // @-mention, etc.) and is exempted; a menu that appears mid-hold is the
-  // long-press menu and gets suppressed. Arming on ANY of these (not just taps
-  // on buttons) never protects the long-press menu, and protects every
-  // intentionally-opened menu regardless of what opener element was tapped.
-  window.addEventListener('pointerup', arm, true);
-  window.addEventListener('click', arm, true);
+  function arm() { intentionalUntil = Date.now() + 1200; }
+  var OPENER = 'button, [role="button"], [role="menuitem"], a[href], summary, label';
+  function armIfOpener(e) {
+    var t = e.target;
+    if (t && t.closest && t.closest(OPENER)) arm();
+  }
+  window.addEventListener('pointerdown', armIfOpener, true);
+  window.addEventListener('pointerup', armIfOpener, true);
+  window.addEventListener('click', armIfOpener, true);
   window.addEventListener('keydown', arm, true);
 
-  function floatingMenu(node) {
-    if (!node || node.nodeType !== 1) return null;
-    var menu = null;
-    if (node.getAttribute && node.getAttribute('role') === 'menu') menu = node;
-    else if (node.querySelector) menu = node.querySelector('[role="menu"]');
-    if (!menu) return null;
-    try {
-      var pos = getComputedStyle(menu).position;
-      if (pos !== 'fixed' && pos !== 'absolute') return null; // structural, not a popover
-    } catch (e) { return null; }
+  // Content scope: labels that identify the per-message action menu. aria-labels
+  // first (stable hooks the script already targets in rules 1 and 28), item text
+  // as fallback.
+  var SIG_ARIA = '[aria-label="Copy message"], [aria-label="Pin as chapter"],'
+    + ' [aria-label="Copy as Markdown"], [aria-label="Attach message as context"]';
+  var SIG_TEXT = ['copy message', 'copy as markdown', 'pin as chapter', 'attach message as context'];
+  function isPerMessageMenu(menu) {
+    if (menu.querySelector(SIG_ARIA)) return true;
+    var items = menu.querySelectorAll('[role="menuitem"]');
+    for (var i = 0; i < items.length; i++) {
+      var t = (items[i].textContent || '').toLowerCase();
+      for (var j = 0; j < SIG_TEXT.length; j++) {
+        if (t.indexOf(SIG_TEXT[j]) !== -1) return true;
+      }
+    }
+    return false;
+  }
+
+  function floatingContainer(menu) {
+    // The menu node is position:relative; walk up to the nearest absolutely/
+    // fixed-positioned ancestor (Base UI's role=presentation positioner) and
+    // hide THAT so the whole popover vanishes.
+    var n = menu;
+    while (n && n !== document.body && n.parentElement) {
+      try {
+        var pos = getComputedStyle(n).position;
+        if (pos === 'absolute' || pos === 'fixed') return n;
+      } catch (e) {}
+      n = n.parentElement;
+    }
     return menu;
   }
 
   function suppress(menu) {
     try {
-      var wrap = (menu.closest && menu.closest('[data-radix-popper-content-wrapper]')) || menu;
-      wrap.style.setProperty('display', 'none', 'important');
-      wrap.style.setProperty('pointer-events', 'none', 'important');
-      wrap.setAttribute('data-ccm-lpmenu-suppressed', '1');
+      menu.setAttribute('data-ccm-lpmenu-suppressed', '1');
+      var el = floatingContainer(menu);
+      el.style.setProperty('display', 'none', 'important');
+      el.style.setProperty('pointer-events', 'none', 'important');
     } catch (e) { /* never break the page */ }
   }
 
-  new MutationObserver(function (muts) {
-    if (Date.now() < intentionalUntil) return; // opened by a real tap/keystroke — keep it
-    for (var i = 0; i < muts.length; i++) {
-      var added = muts[i].addedNodes;
-      for (var j = 0; j < added.length; j++) {
-        var menu = floatingMenu(added[j]);
-        if (menu) suppress(menu);
-      }
+  // Re-scan on every mutation rather than only inspecting addedNodes: the menu
+  // can be inserted first and its items populated in a later mutation, so we
+  // check the whole open menu each time. Cheap — [role="menu"] rarely exists,
+  // and the item test only runs when one does.
+  function scan() {
+    if (Date.now() < intentionalUntil) return; // opened by a real tap/keystroke on an opener — keep it
+    var menus = document.querySelectorAll('[role="menu"]:not([data-ccm-lpmenu-suppressed])');
+    for (var i = 0; i < menus.length; i++) {
+      if (isPerMessageMenu(menus[i])) suppress(menus[i]);
     }
-  }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+  new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
 })();
 
 /* Rule 23's companion. Stamp the top-left menu (sidebar toggle) with a badge
