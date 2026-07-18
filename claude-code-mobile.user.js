@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.105.0
+// @version      1.106.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -51,7 +51,7 @@ window.__ccmStyleEl = GM_addStyle(`
 
   /* 2. Icon-only buttons get a real 44x44 finger target. */
   [aria-label="Send"], [aria-label="Add"], [aria-label="Copy message"],
-  [aria-label="Pin as chapter"], [aria-label="Session actions"],
+  [aria-label="Pin as chapter"], [aria-label^="Session actions"],
   [aria-label="Dismiss question"],
   [aria-label="Open sidebar"], [aria-label="Close side chat"],
   [aria-label="Share"], [aria-label="Views"], [aria-label="Filter"],
@@ -285,11 +285,21 @@ window.__ccmStyleEl = GM_addStyle(`
      the bar and the title gets the full reclaimed width.
 
      The cluster is the .epitaxy-titlebar-fade span inside .ml-auto; its direct
-     children are the action buttons. :not([aria-label="Session actions"]) spares
-     the kebab; everything else (Diff button, Share button, badge wrappers) goes.
-     The hidden buttons stay in the DOM, so the JS can still fire their real React
-     onClick via a programmatic .click(). */
-  [data-top-left="true"] .ml-auto > span > :not([aria-label="Session actions"]) {
+     children are the action buttons. :not([aria-label^="Session actions"]) spares
+     the kebab; everything else (Share button, badge wrappers) goes. The hidden
+     buttons stay in the DOM, so the JS can still fire their real React onClick via
+     a programmatic .click().
+
+     PREFIX match (^=), not exact: claude.ai dynamically appends ", new activity"
+     to the kebab's aria-label when a session has activity (background tasks,
+     unread) — so the label is "Session actions" OR "Session actions, new
+     activity". An exact [aria-label="Session actions"] match stopped sparing the
+     kebab once that suffix appeared, hiding the kebab itself (display:none) and
+     with it the ENTIRE top menu — background processes, artifacts, Share — that
+     the menu is the only gateway to (Ben 2026-07-18: "the ccm top menu with
+     background processes, artifacts, etc seems to have disappeared"). The ^=
+     prefix spares both label variants. */
+  [data-top-left="true"] .ml-auto > span > :not([aria-label^="Session actions"]) {
     display: none !important;
   }
 
@@ -764,7 +774,11 @@ window.__ccmFlags = (function () {
      — Escape is Claude Code's stop-generation key (see the drawer-dismiss IIFE),
      and only if the menu is still open, so we never accidentally re-open it. */
 (function () {
-  var KEBAB = '[aria-label="Session actions"]';
+  // Prefix match: the kebab's aria-label is "Session actions" OR, when the
+  // session has activity, "Session actions, new activity" (claude.ai appends the
+  // suffix dynamically). Exact-match silently found nothing once the suffix
+  // appeared, so nothing forwarded into the menu.
+  var KEBAB = '[aria-label^="Session actions"]';
   var pendingMenu = false;
 
   // Latch when the kebab is tapped so we can claim the menu it spawns.
