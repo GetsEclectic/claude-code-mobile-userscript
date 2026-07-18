@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.106.0
+// @version      1.107.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1936,6 +1936,82 @@ window.__ccmFlags = (function () {
   window.addEventListener('contextmenu', function (e) {
     e.stopImmediatePropagation();
   }, true);
+})();
+
+/* Companion to the contextmenu block above, for TOUCH. On Firefox Android
+   (Ben's phone) a long-press to select transcript text also pops the app's
+   per-message action menu (Copy message / Copy as Markdown / Attach message as
+   context / Pin as chapter) right over the native selection bar — reported
+   2026-07-18, "the custom menu comes up when I try to select text." That menu
+   is NOT raised by a `contextmenu` event (Gecko's long-press context menu IS,
+   and the block above already kills it) — it's Radix's own pointer long-press,
+   which fires no contextmenu event, so the capture block can't see it.
+
+   We can't cleanly cancel Radix's long-press timer from outside, and blocking
+   pointer events on the message would break tap/scroll/selection. Instead we
+   watch for the menu appearing and, if it was NOT opened by a deliberate tap or
+   keystroke, hide it — so a long-press just selects text (native bar stays) and
+   the menu never gets in the way. The SAME menu opened intentionally by tapping
+   the ⋮ More-options button (rule 28) is preserved: a real pointerup/click on a
+   button-like opener, or a recent keydown (the composer "/" command menu, @-
+   mentions, etc.), arms a short "intentional" window that exempts the next menu.
+
+   Scoped tightly: only a freshly-inserted, floating (position fixed/absolute)
+   [role="menu"] is a candidate — structural role=menu nodes and tooltips are
+   left alone. Hide (display:none) rather than remove, so we never removeChild a
+   node React is about to unmount itself. Never dispatches Escape (that's Claude
+   Code's stop-generation key). Gated by localStorage ccmNoLongPressMenu (set to
+   '0' to disable this suppression). */
+(function () {
+  var flagOn = true;
+  try { flagOn = localStorage.getItem('ccmNoLongPressMenu') !== '0'; } catch (e) {}
+  if (!flagOn) return;
+
+  var intentionalUntil = 0;
+  function arm() { intentionalUntil = Date.now() + 600; }
+  // The long-press menu opens WHILE the finger is still held down — i.e. BEFORE
+  // this gesture's pointerup — so a menu that appears right after a pointerup,
+  // click, or keystroke was opened deliberately (⋮ tap, "/" command menu,
+  // @-mention, etc.) and is exempted; a menu that appears mid-hold is the
+  // long-press menu and gets suppressed. Arming on ANY of these (not just taps
+  // on buttons) never protects the long-press menu, and protects every
+  // intentionally-opened menu regardless of what opener element was tapped.
+  window.addEventListener('pointerup', arm, true);
+  window.addEventListener('click', arm, true);
+  window.addEventListener('keydown', arm, true);
+
+  function floatingMenu(node) {
+    if (!node || node.nodeType !== 1) return null;
+    var menu = null;
+    if (node.getAttribute && node.getAttribute('role') === 'menu') menu = node;
+    else if (node.querySelector) menu = node.querySelector('[role="menu"]');
+    if (!menu) return null;
+    try {
+      var pos = getComputedStyle(menu).position;
+      if (pos !== 'fixed' && pos !== 'absolute') return null; // structural, not a popover
+    } catch (e) { return null; }
+    return menu;
+  }
+
+  function suppress(menu) {
+    try {
+      var wrap = (menu.closest && menu.closest('[data-radix-popper-content-wrapper]')) || menu;
+      wrap.style.setProperty('display', 'none', 'important');
+      wrap.style.setProperty('pointer-events', 'none', 'important');
+      wrap.setAttribute('data-ccm-lpmenu-suppressed', '1');
+    } catch (e) { /* never break the page */ }
+  }
+
+  new MutationObserver(function (muts) {
+    if (Date.now() < intentionalUntil) return; // opened by a real tap/keystroke — keep it
+    for (var i = 0; i < muts.length; i++) {
+      var added = muts[i].addedNodes;
+      for (var j = 0; j < added.length; j++) {
+        var menu = floatingMenu(added[j]);
+        if (menu) suppress(menu);
+      }
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
 })();
 
 /* Rule 23's companion. Stamp the top-left menu (sidebar toggle) with a badge
