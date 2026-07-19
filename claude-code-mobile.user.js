@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.109.0
+// @version      1.110.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2092,6 +2092,99 @@ window.__ccmFlags = (function () {
     }
   }
   new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
+})();
+
+/* v1.110 layer 1 - gesture firewall. Suppressing the menu after it opens
+   (v1.108) and even force-closing it (v1.109) still left the selection anchors
+   ungrabbable on Ben's phone, which means the damage happens UPSTREAM: the
+   app's own long-press pipeline (pointer-timer gesture recognizer) runs during
+   the gesture and interferes with Gecko's native selection UI regardless of
+   what we do to the menu afterwards. Precedent in this very script: the
+   composer "Select all" fix below ground-truthed that a single programmatic
+   Selection mutation from the app bundle tears down Android's just-created
+   native selection UI - the same class of interference.
+
+   So: stop the app from ever SEEING the gesture. A capture-phase listener on
+   window (registered at document-start, so it fires before any listener the
+   app adds anywhere - window-capture is the first stop in the propagation
+   path) calls stopImmediatePropagation on touch-origin pointerdown/touchstart
+   whose target is non-control transcript text. The app's gesture recognizer
+   never arms: no menu, no programmatic selection, no focus churn. Deliberately
+   NO preventDefault - the browser's native long-press word-select + anchors +
+   action bar must proceed; we only starve the app's JS.
+
+   Scoping keeps every legitimate behavior alive:
+   - Only inside the transcript ([aria-label="Chat messages"]); the composer,
+     sidebar, drawer scrim, and every screen chrome element are untouched.
+   - Controls are exempt (links, buttons, tool-call expandos, menu items...),
+     so taps and long-presses on them reach the app as before.
+   - Skipped while a real popover is open, so tap-on-text still outside-press-
+     dismisses an intentionally opened menu.
+   - Touch/pen only; desktop mouse behavior is untouched.
+   - Scroll is native and unaffected (no preventDefault, and scrolling does not
+     depend on the app's JS seeing pointerdown).
+   Kill switch: localStorage ccmNativeLongPress = '0'. */
+(function () {
+  var flagOn = true;
+  try { flagOn = localStorage.getItem('ccmNativeLongPress') !== '0'; } catch (e) {}
+  if (!flagOn) return;
+
+  var CHAT = '[aria-label="Chat messages"]';
+  var CONTROL = 'a[href], button, [role="button"], [role="menuitem"], [role="option"],'
+    + ' [role="tab"], [role="checkbox"], [role="switch"], [role="link"], summary, label,'
+    + ' input, textarea, select, [contenteditable="true"], .ProseMirror, audio, video';
+  var OPEN_POPOVER = '[role="menu"]:not([data-ccm-lpmenu-suppressed]), [role="dialog"], [role="listbox"]';
+
+  function firewall(e) {
+    if (e.type === 'pointerdown' && e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+    var t = e.target;
+    if (!t || !t.closest) return;
+    if (!t.closest(CHAT)) return;            // transcript only
+    if (t.closest(CONTROL)) return;          // controls keep app behavior
+    try { if (document.querySelector(OPEN_POPOVER)) return; } catch (err) {}
+    e.stopImmediatePropagation();            // the app never sees this touch
+  }
+  window.addEventListener('pointerdown', firewall, true);
+  window.addEventListener('touchstart', firewall, true);
+})();
+
+/* v1.110 layer 2 - transcript selection guard. Companion to the composer
+   "Select all" guard below, generalized to the transcript. Even with the
+   gesture firewall above, the app can still react to the NATIVE selection via
+   selectionchange listeners and mutate it programmatically - and the composer
+   fix proved empirically that one programmatic Selection call (there:
+   collapse) tears down Android's native selection UI. The app has no
+   legitimate reason to clear or replace a selection the user just made in the
+   read-only transcript, so while a live non-collapsed selection is anchored in
+   the transcript, Selection API calls that would destroy it are no-ops.
+   User-driven clearing (tapping elsewhere) is native browser behavior, not a
+   JS Selection call, and still works; composer selections are excluded, so
+   ProseMirror's caret management is untouched (its own guard below handles the
+   composer case). Kill switch: localStorage ccmSelGuard = '0'. */
+(function () {
+  var flagOn = true;
+  try { flagOn = localStorage.getItem('ccmSelGuard') !== '0'; } catch (e) {}
+  if (!flagOn) return;
+
+  var CHAT = '[aria-label="Chat messages"]';
+  function inTranscript(node) {
+    while (node && node.nodeType !== 1) node = node.parentNode;
+    return !!(node && node.closest && node.closest(CHAT));
+  }
+  function guarded(sel) {
+    try {
+      return !!sel && sel.rangeCount > 0 && !sel.isCollapsed && inTranscript(sel.anchorNode);
+    } catch (e) { return false; }
+  }
+  ['collapse', 'collapseToStart', 'collapseToEnd', 'removeAllRanges', 'empty',
+   'setBaseAndExtent', 'addRange', 'removeRange'].forEach(function (m) {
+    var orig = Selection.prototype[m];
+    if (typeof orig !== 'function') return;
+    Selection.prototype[m] = function () {
+      if (guarded(this)) return; // app JS may not clear/replace a live transcript selection
+      return orig.apply(this, arguments);
+    };
+  });
 })();
 
 /* Rule 23's companion. Stamp the top-left menu (sidebar toggle) with a badge
