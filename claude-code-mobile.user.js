@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.108.0
+// @version      1.109.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2035,12 +2035,48 @@ window.__ccmFlags = (function () {
     return menu;
   }
 
+  /* v1.109: hiding alone is not enough. With display:none the menu is
+     invisible but the app still believes it is OPEN, and Base UI keeps its
+     open-state side effects armed - document-level outside-press dismiss
+     listeners, focus management, teardown that never runs. On Firefox Android
+     that leftover state broke native selection: long-press selected a word and
+     the menu stayed hidden (good), but the selection anchors could not be
+     grabbed (reported 2026-07-19). Fix: after hiding, make the APP close the
+     menu for real by dispatching a synthetic outside-press on document.body.
+     Ground-truthed on the live app (Base UI useDismiss does not require
+     isTrusted): a synthetic pointerdown+pointerup outside the menu closes it
+     and runs the full framework teardown. The dismiss is delayed ~80ms because
+     Base UI attaches its dismiss listeners in a useEffect AFTER the menu node
+     is inserted - dispatching in the same microtask as the MutationObserver
+     would fire before anyone is listening. One retry at ~400ms, verified by
+     checking the node actually left the DOM; the menu stays hidden throughout,
+     so the worst case is v1.108's behavior, never a visible menu. Synthetic
+     events never collapse a native selection (default actions don't run for
+     untrusted events), and body is not an OPENER so the intent gate stays
+     unarmed. */
+  function dismissOutside() {
+    var opts = { bubbles: true, cancelable: true, composed: true,
+                 clientX: 1, clientY: 1,
+                 pointerId: 71, pointerType: 'touch', isPrimary: true };
+    try { document.body.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
+    try { document.body.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
+    try { document.body.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
+    try { document.body.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (e) {}
+    try { document.body.dispatchEvent(new MouseEvent('click', opts)); } catch (e) {}
+  }
+
   function suppress(menu) {
     try {
       menu.setAttribute('data-ccm-lpmenu-suppressed', '1');
       var el = floatingContainer(menu);
       el.style.setProperty('display', 'none', 'important');
       el.style.setProperty('pointer-events', 'none', 'important');
+      setTimeout(function () {
+        if (menu.isConnected) dismissOutside();
+        setTimeout(function () {
+          if (menu.isConnected) dismissOutside(); // retry once if the app hasn't torn it down
+        }, 320);
+      }, 80);
     } catch (e) { /* never break the page */ }
   }
 
