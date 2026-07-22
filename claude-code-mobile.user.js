@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.111.0
+// @version      1.112.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1663,55 +1663,21 @@ window.__ccmFlags = (function () {
   sync();
 })();
 
-/* Dismiss the sidebar drawer after a nav-row tap (mobile only).
+/* (Removed v1.112) Sidebar-drawer auto-dismiss after a nav-row tap.
 
-   On phone widths the sidebar is an overlay drawer, but tapping one of its nav
-   rows (New session / Routines / Customize / a recent session) navigates the
-   underlying page WITHOUT closing the drawer — so you're left staring at the
-   menu sitting on top of freshly-changed content, and the in-drawer list often
-   blanks during the route change ("the sessions disappear but the menu stays
-   open"). So after a row tap we close the drawer ourselves by re-clicking its
-   toggle.
+   This IIFE used to re-click the sidebar toggle 350ms after a nav-row tap,
+   because an older build of claude.ai/code left the drawer open on top of the
+   freshly-navigated page. The app now closes the drawer itself on a row tap, so
+   the workaround became a bug: toggle.click() is NOT idempotent, and by the time
+   the 350ms fired the app had already closed the drawer - so our click RE-OPENED
+   it. That is exactly the "it's not closing after I tap a session" report
+   (Ben 2026-07-22). Verified with bin/ccm-domdump --companion-early: raw app ends
+   bodyOpen=false (auto-closed), userscript-active ends bodyOpen=true (re-opened).
 
-   We do NOT dispatch a synthetic Escape: Escape is also Claude Code's
-   stop-generation key, so firing it here cancelled any in-flight turn (showed up
-   as a stray "Request interrupted by user" mid-task). Re-clicking the toggle
-   routes through the app's own close handler and never touches the keyboard path,
-   so a running turn is untouched.
-
-   Two guards keep it from firing where it shouldn't: width <= 900 (desktop keeps
-   a persistent sidebar — never auto-close it), and a still-open check (a menu row
-   still painted on-screen) — which also ensures the toggle CLOSES the drawer
-   rather than re-opening it when it already closed on its own. The tap is let
-   through untouched and the dismiss is deferred a tick so the app's own
-   navigation runs first. */
-(function () {
-  var ROW = 'aside[aria-label="Sidebar"] button[data-row-main-button]';
-  function drawerOpen() {
-    var rows = document.querySelectorAll(ROW);
-    for (var i = 0; i < rows.length; i++) {
-      if (!rows[i].offsetParent) continue; // display:none / detached
-      var r = rows[i].getBoundingClientRect();
-      if (r.width > 0 && r.left >= 0 && r.left < window.innerWidth) return true;
-    }
-    return false;
-  }
-  function dismiss() {
-    if (window.innerWidth > 900 || !drawerOpen()) return;
-    var toggle = document.querySelector('[aria-label="Open sidebar"]');
-    if (toggle) toggle.click(); // app's own close path — not Escape (would stop a running turn)
-  }
-  document.addEventListener('click', function (e) {
-    if (window.innerWidth > 900) return;
-    var t = e.target;
-    if (!t || !t.closest || !t.closest(ROW)) return;
-    if (window.__ccmDbg) window.__ccmDbg.log('row.tap', null);
-    setTimeout(function () {
-      if (window.__ccmDbg) window.__ccmDbg.log('row.dismiss', null);
-      dismiss();
-    }, 350); // let the app's navigation handler run first
-  }, true);
-})();
+   Do NOT re-add a toggle-based dismiss. If a future app build stops auto-closing,
+   use an IDEMPOTENT close (one that no-ops when the drawer is already shut, e.g.
+   the app's Base UI outside-press) rather than the toggle, which re-opens a
+   closed drawer. */
 
 /* Fix: with the soft keyboard up, the FIRST tap on the top-left menu (the
    "Open sidebar" button) only dismisses the keyboard — it takes a second tap to
