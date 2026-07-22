@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.110.0
+// @version      1.111.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2120,6 +2120,8 @@ window.__ccmFlags = (function () {
      so taps and long-presses on them reach the app as before.
    - Skipped while a real popover is open, so tap-on-text still outside-press-
      dismisses an intentionally opened menu.
+   - Skipped while the sidebar drawer is open, so tap-on-text still outside-
+     press-dismisses the drawer (v1.111 fix - see drawerOpen below).
    - Touch/pen only; desktop mouse behavior is untouched.
    - Scroll is native and unaffected (no preventDefault, and scrolling does not
      depend on the app's JS seeing pointerdown).
@@ -2135,6 +2137,31 @@ window.__ccmFlags = (function () {
     + ' input, textarea, select, [contenteditable="true"], .ProseMirror, audio, video';
   var OPEN_POPOVER = '[role="menu"]:not([data-ccm-lpmenu-suppressed]), [role="dialog"], [role="listbox"]';
 
+  /* v1.111 fix - stand down while the sidebar drawer is open.
+     The regression: with the drawer open, a tap on the transcript behind it is
+     an OUTSIDE-PRESS to dismiss the drawer, not a text-selection gesture. The
+     app detects that dismiss with a document-level pointer listener (Base UI
+     useDismiss; the scrim is a visual-only pointer-events:none backdrop), so
+     the firewall's window-capture stopImmediatePropagation killed it and the
+     drawer got stuck open (Ben 2026-07-22: "pick a session, the menu stays up,
+     tapping outside doesn't close it"). The drawer's positioner is role=null
+     and its scrim is role="presentation", so OPEN_POPOVER above never matched
+     it - hence a dedicated check.
+     Robust in both environments: on the real device a closed drawer is
+     translated off-screen (left < 0); in the headless harness it isn't
+     translated but its body animates to opacity 0. Requiring BOTH on-screen
+     AND opacity > 0.1 reads "open" correctly in each. */
+  function drawerOpen() {
+    try {
+      var b = document.querySelector('.dframe-sidebar-body');
+      if (!b || !b.offsetParent) return false;
+      var r = b.getBoundingClientRect();
+      if (r.width <= 0 || r.left < 0 || r.left >= window.innerWidth) return false;
+      if (parseFloat(getComputedStyle(b).opacity || '1') < 0.1) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+
   function firewall(e) {
     if (e.type === 'pointerdown' && e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
     var t = e.target;
@@ -2142,6 +2169,7 @@ window.__ccmFlags = (function () {
     if (!t.closest(CHAT)) return;            // transcript only
     if (t.closest(CONTROL)) return;          // controls keep app behavior
     try { if (document.querySelector(OPEN_POPOVER)) return; } catch (err) {}
+    if (drawerOpen()) return;                // drawer open: let its outside-press dismiss run
     e.stopImmediatePropagation();            // the app never sees this touch
   }
   window.addEventListener('pointerdown', firewall, true);
