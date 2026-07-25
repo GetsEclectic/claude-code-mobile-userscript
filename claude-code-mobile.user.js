@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.125.0
+// @version      1.126.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1016,8 +1016,21 @@ window.__ccmFlags = (function () {
             localStorage.removeItem('ccmTelemPubKey');
             alert('CCM diagnostics disabled.');
           } else {
-            var cfg = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
-            if (!cfg || !cfg.u || !cfg.k) return;
+            var cfg = null;
+            // A mistyped or truncated link must SAY so. Swallowing the parse
+            // error made a corrupted link indistinguishable from a link never
+            // tapped - it silently did nothing, and cost a round trip to work
+            // out which had happened.
+            try {
+              cfg = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
+            } catch (e) {
+              alert('That CCM diagnostics link is corrupted - nothing was changed.');
+              return;
+            }
+            if (!cfg || !cfg.u || !cfg.k) {
+              alert('That CCM diagnostics link is incomplete - nothing was changed.');
+              return;
+            }
             if (!confirm('Send CCM diagnostics to ' + new URL(cfg.u).host + '?')) return;
             localStorage.setItem('ccmTelemUrl', cfg.u);
             localStorage.setItem('ccmTelemPubKey', cfg.k);
