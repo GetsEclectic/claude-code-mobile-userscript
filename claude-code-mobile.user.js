@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.115.0
+// @version      1.116.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2326,6 +2326,36 @@ window.__ccmFlags = (function () {
      resolve it. Reports the gap timeline plus what was focused and whether it
      was suppressed at each step, which is what separates "focus beat the
      suppression" from "something re-focused after the switch". */
+  var KB_LOG_KEY = 'ccmKbLog';
+  var KB_LOG_MAX = 24;
+
+  function kbLogPush(line) {
+    try {
+      var log = JSON.parse(localStorage.getItem(KB_LOG_KEY) || '[]');
+      log.push(line);
+      if (log.length > KB_LOG_MAX) log = log.slice(-KB_LOG_MAX);
+      localStorage.setItem(KB_LOG_KEY, JSON.stringify(log));
+    } catch (e) { /* storage full or blocked - the toast still showed it */ }
+  }
+
+  /* Describe whatever currently holds focus, in the three terms that decide
+     this bug: what it is, what inputmode Gecko would read off it, and whether
+     noKbOnSwitch had already stamped it. `n0` lets a mark say whether this is
+     the SAME node that was focused when the swipe started or a fresh one -
+     "the composer remounted and grabbed focus" and "the composer we already
+     suppressed re-raised the keyboard" are different bugs with different fixes,
+     and the tag/inputmode alone cannot tell them apart. */
+  function focusDesc(n0) {
+    var ae = document.activeElement;
+    if (!ae || ae === document.body) return { el: null, s: 'none' };
+    var tag = ae.tagName ? ae.tagName.toLowerCase() : '?';
+    if (ae.getAttribute && ae.getAttribute('contenteditable') === 'true') tag = 'ce';
+    var im = (ae.getAttribute && ae.getAttribute('inputmode')) || '-';
+    var kb = (ae.getAttribute && ae.getAttribute('data-ccm-kb')) || '-';
+    var same = n0 === undefined ? '' : (ae === n0 ? ' S' : ' N');
+    return { el: ae, s: tag + '/' + im + '/' + kb + same };
+  }
+
   function kbDiag() {
     try {
       if (localStorage.getItem('ccmKbDiag') === '0') return;
@@ -2334,26 +2364,78 @@ window.__ccmFlags = (function () {
     if (!vv) return;
     var t0 = Date.now();
     function gap() { return Math.round(window.innerHeight - vv.height); }
-    var base = gap(), last = base, marks = [];
+    var base = gap(), last = base, peak = base, peakAt = 0, marks = [];
+    var f0 = focusDesc(), n0 = f0.el;
     function step() {
       var g = gap();
+      if (g > peak) { peak = g; peakAt = Date.now() - t0; }
       if (Math.abs(g - last) > 24) {     // ignore URL-bar jitter, catch the VK
-        var ae = document.activeElement;
-        var im = (ae && ae.getAttribute && ae.getAttribute('inputmode')) || '-';
-        var kb = (ae && ae.getAttribute && ae.getAttribute('data-ccm-kb')) || '-';
-        var tag = ae ? ae.tagName.toLowerCase() : 'none';
-        if (ae && ae.getAttribute && ae.getAttribute('contenteditable') === 'true') tag = 'ce';
-        marks.push((Date.now() - t0) + 'ms ' + g + ' ' + tag + '/' + im + '/' + kb);
+        // Cap the mark list: a long tail of URL-bar scroll jitter would push
+        // the informative first transitions off the end of the panel line.
+        if (marks.length < 6) {
+          marks.push((Date.now() - t0) + 'ms ' + (g > last ? '+' : '') + (g - last)
+            + ' ' + focusDesc(n0).s);
+        }
         last = g;
       }
       if (Date.now() - t0 < 3500) { requestAnimationFrame(step); return; }
-      var line = marks.length ? ('kb ' + base + ' | ' + marks.join(' | '))
-                              : ('kb flat ' + base);
+      var rose = peak - base > 100;      // a real VK, not a URL-bar collapse
+      var verdict = rose ? ('UP ' + (peak - base) + '@' + peakAt + 'ms') : 'flat';
+      var line = verdict + ' f0=' + f0.s
+        + (marks.length ? ' | ' + marks.join(' | ') : '');
       try { localStorage.setItem('ccmKbDiagLast', line); } catch (e) {}
-      toast(line, true);
+      kbLogPush(line);
+      // Short toast only: during a batch of swipes a 9-second wall of text is
+      // worse than useless. The full line lives in the ring, read via ?ccmKb=1.
+      toast('kb ' + verdict);
     }
     requestAnimationFrame(step);
   }
+
+  /* One-screenshot readout of the whole ring.
+     The flicker is intermittent (Ben 2026-07-25: "maybe a third of the time"),
+     so a single trace cannot characterise it - the question is what differs
+     between the swipes that flash and the swipes that don't, which needs the
+     batch side by side. Opening claude.ai/code?ccmKb=1 renders every recorded
+     swipe at once so a batch of ten costs one screenshot instead of ten.
+     ?ccmKb=0 clears the ring. */
+  function kbPanel() {
+    var log = [];
+    try { log = JSON.parse(localStorage.getItem(KB_LOG_KEY) || '[]'); } catch (e) {}
+    var box = document.createElement('div');
+    box.id = 'ccm-kb-panel';
+    box.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#111;'
+      + 'color:#eee;font:11px/1.45 ui-monospace,Menlo,monospace;padding:10px;'
+      + 'overflow:auto;-webkit-overflow-scrolling:touch;white-space:pre-wrap;'
+      + 'word-break:break-word';
+    var head = 'ccm kb log - ' + log.length + ' swipe(s)\n'
+      + 'verdict pk@t f0=tag/inputmode/data-ccm-kb | marks (S=same node, N=new)\n'
+      + '------------------------------------------------------------\n';
+    box.textContent = head + (log.length
+      ? log.map(function (l, i) { return (i + 1) + '. ' + l; }).join('\n\n')
+      : '(empty - swipe a few times, then reload this URL)');
+    var close = document.createElement('button');
+    close.textContent = 'close';
+    close.style.cssText = 'position:fixed;top:6px;right:8px;font-size:14px;'
+      + 'padding:6px 12px;background:#333;color:#eee;border:1px solid #666;'
+      + 'border-radius:8px';
+    close.addEventListener('click', function () { box.remove(); });
+    box.appendChild(close);
+    document.documentElement.appendChild(box);
+  }
+
+  try {
+    var kbQs = new URLSearchParams(location.search).get('ccmKb');
+    if (kbQs === '0') {
+      try { localStorage.removeItem(KB_LOG_KEY); } catch (e) {}
+    } else if (kbQs === '1') {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', kbPanel);
+      } else {
+        kbPanel();
+      }
+    }
+  } catch (e) { /* no URLSearchParams / no location - nothing to show */ }
 
   function begin(touch, target) {
     tracking = false;
