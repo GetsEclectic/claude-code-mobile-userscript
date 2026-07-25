@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.123.0
+// @version      1.124.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1004,7 +1004,7 @@ window.__ccmFlags = (function () {
      never enter this public script - only the link carries them. */
   try {
     if (/(?:^|[#&])ccmtelem=/.test(location.hash || '')) {
-      document.addEventListener('DOMContentLoaded', function () {
+      var applyCfg = function () {
         try {
           var raw = decodeURIComponent(
             /(?:^|[#&])ccmtelem=([^&]+)/.exec(location.hash)[1]);
@@ -1026,7 +1026,14 @@ window.__ccmFlags = (function () {
           }
           location.reload();
         } catch (e) {}
-      });
+      };
+      // Gate on readyState, not on DOMContentLoaded alone: at document-start the
+      // event is still ahead of us, but anywhere the script is applied later
+      // (the test harness injects post-load) that listener would never fire and
+      // the link would silently do nothing.
+      if (document.readyState === 'loading')
+        document.addEventListener('DOMContentLoaded', applyCfg);
+      else applyCfg();
     }
   } catch (e) {}
 
