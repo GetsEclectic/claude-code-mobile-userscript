@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.124.0
+// @version      1.125.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1352,6 +1352,15 @@ window.__ccmFlags = (function () {
     } catch (e) {}
   }, 15000);
   pushState();
+
+  // 7. Enablement proof, once per page load, immediately.
+  //    Without this, "no kbguard beacons" is ambiguous between "telemetry is
+  //    off" and "telemetry is on and every swipe was clean" - and a clean
+  //    reading is not evidence until the instrument has been shown able to
+  //    speak at all. The 5-minute keepalive eventually answers it, but five
+  //    minutes is far too slow to tell someone mid-session whether their taps
+  //    are landing.
+  beacon('hello', null, null);
 })();
 
 /* Debug instrumentation — v1.38.0. Off by default; activate by adding
