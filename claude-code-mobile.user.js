@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.117.0
+// @version      1.118.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2386,9 +2386,18 @@ window.__ccmFlags = (function () {
        and the flicker has some other trigger entirely. */
     var fx = [];
     function onFocus() {
-      if (fx.length < 4) fx.push((Date.now() - t0) + 'ms ' + focusDesc(n0).s);
+      if (fx.length < 5) fx.push((Date.now() - t0) + 'ms ' + focusDesc(n0).s);
     }
-    document.addEventListener('focusin', onFocus, true);
+    /* On WINDOW, not document, and that placement is the whole point.
+       noKbOnSwitch's suppressor is a capture-phase focusin listener on
+       `document`, and capture runs outermost-first, so a window listener sees
+       the element BEFORE the suppressor stamps it. v1.117 listened on document
+       and was therefore registered second on the same node, so every trace read
+       `ce/none/off` - which only proved the suppressor had already run, and said
+       nothing about whether it won the race. Reading pre-suppression state is
+       what distinguishes "focus beat the suppression" (arrives bare, `-/-`)
+       from "suppression landed and the keyboard rose anyway" (`none/off`). */
+    window.addEventListener('focusin', onFocus, true);
     function step() {
       var cur = h();
       if (cur < low) { low = cur; lowAt = Date.now() - t0; }
@@ -2403,10 +2412,10 @@ window.__ccmFlags = (function () {
         }
         last = cur;
       }
-      if (Date.now() - t0 < 3500) { requestAnimationFrame(step); return; }
+      if (Date.now() - t0 < 5200) { requestAnimationFrame(step); return; }
       var rose = base - low > 100;       // a real VK, not URL-bar chrome
       var verdict = rose ? ('UP -' + (base - low) + '@' + lowAt + 'ms') : 'flat';
-      document.removeEventListener('focusin', onFocus, true);
+      window.removeEventListener('focusin', onFocus, true);
       var line = verdict + ' h0=' + base + '/' + baseIH + ' f0=' + f0.s
         + (fx.length ? ' fx[' + fx.join(', ') + ']' : ' fx[none]')
         + (marks.length ? ' | ' + marks.join(' | ') : '');
