@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.114.0
+// @version      1.115.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2215,7 +2215,9 @@ window.__ccmFlags = (function () {
   // One reused pill under the title bar, naming where the swipe landed and the
   // position in the list, so paging never feels like the app jumped on its own.
   var toastEl = null, toastTimer = 0;
-  function toast(msg) {
+  // long=true: a multi-line readout that stays up long enough to read (the
+  // keyboard diagnostic), instead of the one-line pill that names the session.
+  function toast(msg, long) {
     try {
       if (!toastEl || !toastEl.isConnected) {
         toastEl = document.createElement('div');
@@ -2228,6 +2230,9 @@ window.__ccmFlags = (function () {
           + 'opacity:0;transition:opacity 0.18s ease;';
         document.body.appendChild(toastEl);
       }
+      toastEl.style.whiteSpace = long ? 'normal' : 'nowrap';
+      toastEl.style.borderRadius = long ? '10px' : '999px';
+      toastEl.style.maxWidth = long ? '92vw' : '82vw';
       toastEl.textContent = msg;
       // Force a reflow so a back-to-back second toast re-animates rather than
       // sitting at opacity 1 with no visible change.
@@ -2236,7 +2241,7 @@ window.__ccmFlags = (function () {
       clearTimeout(toastTimer);
       toastTimer = setTimeout(function () {
         if (toastEl) toastEl.style.opacity = '0';
-      }, 1500);
+      }, long ? 9000 : 1500);
     } catch (e) {}
   }
 
@@ -2304,7 +2309,50 @@ window.__ccmFlags = (function () {
       } catch (e) {
         location.href = href;   // last resort: a full load still gets Ben there
       }
+      kbDiag();
     }, 0);
+  }
+
+  /* DIAGNOSTIC (ccmKbDiag=0 to silence): report what the soft keyboard actually
+     did across the switch, in the toast.
+
+     Two fixes for the keyboard flash shipped on reasoning about Gecko's
+     focus/IME ordering and both missed, and none of the automation here can
+     see the phenomenon: Chromium has no keyboard, redroid ships no IME at all,
+     and sampling `dumpsys input_method` over the phone relay tops out around
+     8Hz - a 6-minute watch on Ben's phone caught only his real typing, never a
+     flash. visualViewport IS the keyboard, measured from inside the page at
+     rAF rate on the real device, so this is the one instrument that can
+     resolve it. Reports the gap timeline plus what was focused and whether it
+     was suppressed at each step, which is what separates "focus beat the
+     suppression" from "something re-focused after the switch". */
+  function kbDiag() {
+    try {
+      if (localStorage.getItem('ccmKbDiag') === '0') return;
+    } catch (e) {}
+    var vv = window.visualViewport;
+    if (!vv) return;
+    var t0 = Date.now();
+    function gap() { return Math.round(window.innerHeight - vv.height); }
+    var base = gap(), last = base, marks = [];
+    function step() {
+      var g = gap();
+      if (Math.abs(g - last) > 24) {     // ignore URL-bar jitter, catch the VK
+        var ae = document.activeElement;
+        var im = (ae && ae.getAttribute && ae.getAttribute('inputmode')) || '-';
+        var kb = (ae && ae.getAttribute && ae.getAttribute('data-ccm-kb')) || '-';
+        var tag = ae ? ae.tagName.toLowerCase() : 'none';
+        if (ae && ae.getAttribute && ae.getAttribute('contenteditable') === 'true') tag = 'ce';
+        marks.push((Date.now() - t0) + 'ms ' + g + ' ' + tag + '/' + im + '/' + kb);
+        last = g;
+      }
+      if (Date.now() - t0 < 3500) { requestAnimationFrame(step); return; }
+      var line = marks.length ? ('kb ' + base + ' | ' + marks.join(' | '))
+                              : ('kb flat ' + base);
+      try { localStorage.setItem('ccmKbDiagLast', line); } catch (e) {}
+      toast(line, true);
+    }
+    requestAnimationFrame(step);
   }
 
   function begin(touch, target) {
