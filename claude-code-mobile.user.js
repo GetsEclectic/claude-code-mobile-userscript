@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.118.0
+// @version      1.119.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2162,10 +2162,13 @@ window.__ccmFlags = (function () {
   // swipe re-reads, picking up new sessions and the current ordering).
   var SNAP_MS = 90000;
   // How long after a swipe the keyboard module force-suppresses anything the app
-  // focuses. Long enough to cover a cold route that fetches before it mounts the
-  // composer, short enough that a deliberate composer tap after landing still
-  // raises the keyboard normally.
-  var KB_GUARD_MS = 2500;
+  // focuses. Sized from measurement, not taste: a swipe does not focus the
+  // composer once, it remounts and refocuses it 2-3 times, and Ben's phone
+  // showed a remount taking focus as late as 3699ms after the swipe (v1.117
+  // trace, 7 swipes) - so the original 2500ms let the late remount through
+  // entirely. A deliberate composer tap still raises the keyboard normally
+  // inside this window, because pointerdown on the composer clears the guard.
+  var KB_GUARD_MS = 4500;
   var COMPOSER = 'textarea, [contenteditable="true"]';
   var BLOCK = 'aside, [role="menu"], [role="dialog"], [role="listbox"], [role="slider"],'
     + ' input, textarea, select, [contenteditable="true"], .ProseMirror, form, audio, video';
@@ -2329,6 +2332,14 @@ window.__ccmFlags = (function () {
   var KB_LOG_KEY = 'ccmKbLog';
   var KB_LOG_MAX = 24;
 
+  // Local wall-clock HH:MM:SS.mmm, to match how logcat prints ImeTracker rows.
+  function hhmmss(ms) {
+    var d = new Date(ms);
+    function p(n, w) { var s = String(n); while (s.length < w) s = '0' + s; return s; }
+    return p(d.getHours(), 2) + ':' + p(d.getMinutes(), 2) + ':'
+      + p(d.getSeconds(), 2) + '.' + p(d.getMilliseconds(), 3);
+  }
+
   function kbLogPush(line) {
     try {
       var log = JSON.parse(localStorage.getItem(KB_LOG_KEY) || '[]');
@@ -2416,7 +2427,16 @@ window.__ccmFlags = (function () {
       var rose = base - low > 100;       // a real VK, not URL-bar chrome
       var verdict = rose ? ('UP -' + (base - low) + '@' + lowAt + 'ms') : 'flat';
       window.removeEventListener('focusin', onFocus, true);
-      var line = verdict + ' h0=' + base + '/' + baseIH + ' f0=' + f0.s
+      /* Wall-clock, not just elapsed ms. The keyboard is measured OUTSIDE the
+         page (Android ImeTracker via logcat, since a brief flash never resizes
+         the viewport and no in-page signal can see it), so the two timelines
+         have to be aligned by absolute time. With this stamp a panel screenshot
+         and an ImeTracker capture taken over the same swipes can be read
+         together: which swipe produced which SHOW/HIDE pair, and what the page
+         had focused at that instant. `t0` is the swipe's nav, so an ImeTracker
+         SHOW at t0+X lands X ms after this row's navigation. */
+      var line = 't0=' + hhmmss(t0) + ' ' + verdict
+        + ' h0=' + base + '/' + baseIH + ' f0=' + f0.s
         + (fx.length ? ' fx[' + fx.join(', ') + ']' : ' fx[none]')
         + (marks.length ? ' | ' + marks.join(' | ') : '');
       try { localStorage.setItem('ccmKbDiagLast', line); } catch (e) {}
