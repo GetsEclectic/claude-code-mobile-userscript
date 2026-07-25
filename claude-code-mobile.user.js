@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.120.0
+// @version      1.121.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1792,6 +1792,33 @@ window.__ccmFlags = (function () {
   if (!window.__ccmFlags.noKbOnSwitch) return;
   var COMPOSER = 'textarea, [contenteditable="true"]';
 
+  /* Blurring the composer inside the swipe guard window is what actually kills
+     the flash, and inputmode="none" alone provably does not. Measured on Ben's
+     phone with ImeTracker (v1.120, 8 swipes, 3 flashes):
+
+       54.243 swipe -> 54.499 first composer focus == 54.499 onRequestShow
+       ORIGIN_CLIENT/SHOW_SOFT_INPUT -> 54.619 onRequestHide (+120ms) ->
+       onCancelled at PHASE_CLIENT_ANIMATION_CANCEL
+
+     Gecko issues the show on the same millisecond as the focus, on a composer
+     that reads `ce/-/-` (no inputmode, never stamped). The inputmode="none"
+     written below lands after that, and Gecko only acts on it 115-197ms later -
+     long enough for the keyboard to animate part-way up and get yanked. That
+     cancel IS the flicker; the three instances differed only in the gap
+     (120/115/197ms). So the goal here is not to prevent the show - by focus time
+     it is already too late for that - but to get the hide issued inside the SAME
+     task, before the IME animation has anything to draw.
+
+     Bounded by BLUR_MAX per guard window: a framework that focuses on mount may
+     refocus on blur, and an unbounded blur-on-focus is a focus war. Past the cap
+     we fall back to inputmode alone (a late cancel - a visible flash, but the
+     keyboard does not stay up).
+
+     Safe for deliberate typing: the pointerdown handler below clears the guard
+     before focusin fires, so a real tap on the composer never reaches this. */
+  var BLUR_MAX = 6;
+  var blurEpoch = 0, blurs = 0;
+
   // Suppress the keyboard for a composer: inputmode="none" so focus doesn't
   // raise the VK. Stash the natural inputmode so a real tap can restore it.
   // force=true re-suppresses a composer that was already released by a tap -
@@ -1876,10 +1903,10 @@ window.__ccmFlags = (function () {
   // dispatched - and the inputmode="none" written here lands afterwards, so
   // 169-193ms later Gecko emits onRequestHide and the in-flight show dies with
   // `onCancelled at PHASE_CLIENT_ANIMATION_CANCEL`. That cancel IS the flicker
-  // Ben sees. Preventing it requires the attribute to be present BEFORE focus,
-  // which is the observer's job above - this listener is the safety net for
-  // anything the observer still misses, and a net that cancels is better than a
-  // keyboard that stays up, but it is not the fix.
+  // Ben sees. Preventing the show outright requires the attribute to be present
+  // BEFORE focus, which is the observer's job above; this listener's job is to
+  // make the cancel arrive fast enough to be invisible, via the synchronous
+  // blur() described at BLUR_MAX.
   //
   // On WINDOW, not document: capture runs outermost-first, so this is the
   // earliest point in the DOM event path where the attribute can be written.
@@ -1891,6 +1918,12 @@ window.__ccmFlags = (function () {
     var t = e.target;
     var el = t && t.closest && t.closest(COMPOSER);
     if (!el) return;
+    var until = window.__ccmKbGuardUntil || 0;
+    var guarded = Date.now() < until;
+    /* Inside the guard window, also DROP FOCUS synchronously - see BLUR_MAX. */
+    if (guarded && until !== blurEpoch) { blurEpoch = until; blurs = 0; }
+    var doBlur = guarded && blurs < BLUR_MAX;
+    if (doBlur) blurs++;
     /* Record the composer's state BEFORE suppress() touches it, here rather
        than in kbDiag. kbDiag used to keep its own window-capture focusin
        listener, but now that this suppressor is also on window capture - and
@@ -1909,11 +1942,15 @@ window.__ccmFlags = (function () {
         kb: el.getAttribute('data-ccm-kb') || '-',
         obs: el.getAttribute('data-ccm-obs') ? 'obs' : 'NOOBS',
         fresh: el !== window.__ccmKbLastEl,
+        blur: doBlur,
       });
       if (ring.length > 16) ring.shift();
       window.__ccmKbLastEl = el;
     } catch (err) { /* diagnostics must never break the suppression below */ }
-    suppress(el, Date.now() < (window.__ccmKbGuardUntil || 0));
+    suppress(el, guarded);
+    if (doBlur) {
+      try { el.blur(); } catch (err2) { /* swallow */ }
+    }
   }, true);
 
   // A genuine tap on a suppressed composer releases it (keyboard comes up).
@@ -2465,7 +2502,7 @@ window.__ccmFlags = (function () {
       for (var i = preFrom; i < ring.length && out.length < 5; i++) {
         var r = ring[i];
         out.push((r.t - t0) + 'ms ' + r.tag + '/' + r.im + '/' + r.kb
-          + '/' + r.obs + (r.fresh ? ' N' : ' S'));
+          + '/' + r.obs + (r.fresh ? ' N' : ' S') + (r.blur ? ' B' : ''));
       }
       return out;
     }
@@ -2526,7 +2563,10 @@ window.__ccmFlags = (function () {
       + 'word-break:break-word';
     var head = 'ccm kb log - ' + log.length + ' swipe(s)\n'
       + 'verdict h0=vv/inner f0=... fx[t tag/inputmode/kb/obs] pre-suppression\n'
-      + 'NOOBS = observer never stamped it; obs = it had been seen\n'
+      + 'obs = observer had stamped it; NOOBS = it had not YET - ambiguous\n'
+      + '  between "the observer never matched this node" and "its microtask had\n'
+      + '  not run", i.e. mount and focus in one task. Do not read it as the first.\n'
+      + 'B = the guard-window blur() fired on that focus\n'
       + '| marks: t dHeight dInner tag/inputmode/kb (S=same node, N=new)\n'
       + '------------------------------------------------------------\n';
     box.textContent = head + (log.length
