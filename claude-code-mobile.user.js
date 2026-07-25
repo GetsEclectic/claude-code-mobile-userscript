@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.121.0
+// @version      1.122.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1851,10 +1851,9 @@ window.__ccmFlags = (function () {
   }
 
   // Mark every composer the observer has actually SEEN, whether or not suppress()
-  // then had anything to do. Without this there is no way to tell the two causes
-  // of "focused while unsuppressed" apart: the observer never matched the node
-  // (a coverage gap) versus the observer matched it too late (a timing race).
-  // kbDiag reports this attribute at focus time, so the trace answers it.
+  // then had anything to do, so a live inspection can tell the two causes of
+  // "focused while unsuppressed" apart: the observer never matched the node (a
+  // coverage gap) versus the observer matched it too late (a timing race).
   function mark(el) {
     if (el && !el.getAttribute('data-ccm-obs')) el.setAttribute('data-ccm-obs', '1');
   }
@@ -1924,29 +1923,6 @@ window.__ccmFlags = (function () {
     if (guarded && until !== blurEpoch) { blurEpoch = until; blurs = 0; }
     var doBlur = guarded && blurs < BLUR_MAX;
     if (doBlur) blurs++;
-    /* Record the composer's state BEFORE suppress() touches it, here rather
-       than in kbDiag. kbDiag used to keep its own window-capture focusin
-       listener, but now that this suppressor is also on window capture - and
-       registers at document-start, so first - any listener kbDiag adds later
-       necessarily observes the ALREADY-SUPPRESSED element. That is exactly the
-       mistake v1.117 made on `document`, and moving both to `window` would
-       reproduce it. The module that mutates the attribute is the only one that
-       can honestly report what was there beforehand. */
-    try {
-      var ring = window.__ccmKbPre || (window.__ccmKbPre = []);
-      ring.push({
-        t: Date.now(),
-        tag: el.getAttribute('contenteditable') === 'true'
-          ? 'ce' : el.tagName.toLowerCase(),
-        im: el.getAttribute('inputmode') || '-',
-        kb: el.getAttribute('data-ccm-kb') || '-',
-        obs: el.getAttribute('data-ccm-obs') ? 'obs' : 'NOOBS',
-        fresh: el !== window.__ccmKbLastEl,
-        blur: doBlur,
-      });
-      if (ring.length > 16) ring.shift();
-      window.__ccmKbLastEl = el;
-    } catch (err) { /* diagnostics must never break the suppression below */ }
     suppress(el, guarded);
     if (doBlur) {
       try { el.blur(); } catch (err2) { /* swallow */ }
@@ -2405,195 +2381,9 @@ window.__ccmFlags = (function () {
       } catch (e) {
         location.href = href;   // last resort: a full load still gets Ben there
       }
-      kbDiag();
     }, 0);
   }
 
-  /* DIAGNOSTIC (ccmKbDiag=0 to silence): report what the soft keyboard actually
-     did across the switch, in the toast.
-
-     Two fixes for the keyboard flash shipped on reasoning about Gecko's
-     focus/IME ordering and both missed, and none of the automation here can
-     see the phenomenon: Chromium has no keyboard, redroid ships no IME at all,
-     and sampling `dumpsys input_method` over the phone relay tops out around
-     8Hz - a 6-minute watch on Ben's phone caught only his real typing, never a
-     flash. visualViewport IS the keyboard, measured from inside the page at
-     rAF rate on the real device, so this is the one instrument that can
-     resolve it. Reports the gap timeline plus what was focused and whether it
-     was suppressed at each step, which is what separates "focus beat the
-     suppression" from "something re-focused after the switch". */
-  var KB_LOG_KEY = 'ccmKbLog';
-  var KB_LOG_MAX = 24;
-
-  // Local wall-clock HH:MM:SS.mmm, to match how logcat prints ImeTracker rows.
-  function hhmmss(ms) {
-    var d = new Date(ms);
-    function p(n, w) { var s = String(n); while (s.length < w) s = '0' + s; return s; }
-    return p(d.getHours(), 2) + ':' + p(d.getMinutes(), 2) + ':'
-      + p(d.getSeconds(), 2) + '.' + p(d.getMilliseconds(), 3);
-  }
-
-  function kbLogPush(line) {
-    try {
-      var log = JSON.parse(localStorage.getItem(KB_LOG_KEY) || '[]');
-      log.push(line);
-      if (log.length > KB_LOG_MAX) log = log.slice(-KB_LOG_MAX);
-      localStorage.setItem(KB_LOG_KEY, JSON.stringify(log));
-    } catch (e) { /* storage full or blocked - the toast still showed it */ }
-  }
-
-  /* Describe whatever currently holds focus, in the three terms that decide
-     this bug: what it is, what inputmode Gecko would read off it, and whether
-     noKbOnSwitch had already stamped it. `n0` lets a mark say whether this is
-     the SAME node that was focused when the swipe started or a fresh one -
-     "the composer remounted and grabbed focus" and "the composer we already
-     suppressed re-raised the keyboard" are different bugs with different fixes,
-     and the tag/inputmode alone cannot tell them apart. */
-  function focusDesc(n0) {
-    var ae = document.activeElement;
-    if (!ae || ae === document.body) return { el: null, s: 'none' };
-    var tag = ae.tagName ? ae.tagName.toLowerCase() : '?';
-    if (ae.getAttribute && ae.getAttribute('contenteditable') === 'true') tag = 'ce';
-    var im = (ae.getAttribute && ae.getAttribute('inputmode')) || '-';
-    var kb = (ae.getAttribute && ae.getAttribute('data-ccm-kb')) || '-';
-    var same = n0 === undefined ? '' : (ae === n0 ? ' S' : ' N');
-    return { el: ae, s: tag + '/' + im + '/' + kb + same };
-  }
-
-  function kbDiag() {
-    try {
-      if (localStorage.getItem('ccmKbDiag') === '0') return;
-    } catch (e) {}
-    var vv = window.visualViewport;
-    if (!vv) return;
-    var t0 = Date.now();
-    /* Measure the ABSOLUTE viewport height, not innerHeight - visualViewport
-       .height. That gap is the obvious keyboard proxy and it is useless in THIS
-       script: the ccmIW module (v1.94) appends interactive-widget=resizes-content
-       to the viewport meta precisely so the soft keyboard shrinks the layout
-       viewport in lockstep with the visual one, which pins the gap at ~0 whether
-       the keyboard is up or down. v1.116 measured that gap and returned 15
-       consecutive "flat" traces with zero marks across a batch in which Ben saw
-       the flicker - a blind gauge reading clean, not an absent bug. Under
-       resizes-content the keyboard is visible as a DROP in the absolute height,
-       so that is what this samples; innerHeight is carried alongside to confirm
-       the two really do move together. */
-    function h() { return Math.round(vv.height); }
-    var base = h(), last = base, low = base, lowAt = 0, marks = [];
-    var baseIH = Math.round(window.innerHeight);
-    var f0 = focusDesc(), n0 = f0.el;
-    /* Independent second signal. Height alone cannot distinguish "the keyboard
-       never rose" from "the gauge is blind again" - which is exactly the trap
-       v1.116 fell into - so record every focus change during the window too.
-       Flat height WITH a composer focus is a measurement problem; flat height
-       with NO focus at all is real evidence the switch never focused anything
-       and the flicker has some other trigger entirely. */
-    /* Read the pre-suppression focus records that noKbOnSwitch writes into
-       window.__ccmKbPre, rather than registering a listener here. The suppressor
-       is on window capture and registers at document-start, so any listener
-       added at swipe time runs after it and could only ever report the
-       ALREADY-SUPPRESSED state - which is the exact mistake v1.117 made on
-       `document`. Only ring entries from this swipe's t0 onward belong to this
-       row, hence the index watermark. */
-    var preFrom = (window.__ccmKbPre || []).length;
-    function collectFx() {
-      var ring = window.__ccmKbPre || [];
-      var out = [];
-      for (var i = preFrom; i < ring.length && out.length < 5; i++) {
-        var r = ring[i];
-        out.push((r.t - t0) + 'ms ' + r.tag + '/' + r.im + '/' + r.kb
-          + '/' + r.obs + (r.fresh ? ' N' : ' S') + (r.blur ? ' B' : ''));
-      }
-      return out;
-    }
-    function step() {
-      var cur = h();
-      if (cur < low) { low = cur; lowAt = Date.now() - t0; }
-      if (Math.abs(cur - last) > 24) {   // ignore URL-bar jitter, catch the VK
-        // Cap the mark list: a long tail of URL-bar scroll jitter would push
-        // the informative first transitions off the end of the panel line.
-        if (marks.length < 6) {
-          var dih = Math.round(window.innerHeight) - baseIH;
-          marks.push((Date.now() - t0) + 'ms ' + (cur > last ? '+' : '') + (cur - last)
-            + ' ih' + (dih >= 0 ? '+' : '') + dih
-            + ' ' + focusDesc(n0).s);
-        }
-        last = cur;
-      }
-      if (Date.now() - t0 < 5200) { requestAnimationFrame(step); return; }
-      var rose = base - low > 100;       // a real VK, not URL-bar chrome
-      var verdict = rose ? ('UP -' + (base - low) + '@' + lowAt + 'ms') : 'flat';
-      var fx = collectFx();
-      /* Wall-clock, not just elapsed ms. The keyboard is measured OUTSIDE the
-         page (Android ImeTracker via logcat, since a brief flash never resizes
-         the viewport and no in-page signal can see it), so the two timelines
-         have to be aligned by absolute time. With this stamp a panel screenshot
-         and an ImeTracker capture taken over the same swipes can be read
-         together: which swipe produced which SHOW/HIDE pair, and what the page
-         had focused at that instant. `t0` is the swipe's nav, so an ImeTracker
-         SHOW at t0+X lands X ms after this row's navigation. */
-      var line = 't0=' + hhmmss(t0) + ' ' + verdict
-        + ' h0=' + base + '/' + baseIH + ' f0=' + f0.s
-        + (fx.length ? ' fx[' + fx.join(', ') + ']' : ' fx[none]')
-        + (marks.length ? ' | ' + marks.join(' | ') : '');
-      try { localStorage.setItem('ccmKbDiagLast', line); } catch (e) {}
-      kbLogPush(line);
-      // Short toast only: during a batch of swipes a 9-second wall of text is
-      // worse than useless. The full line lives in the ring, read via ?ccmKb=1.
-      toast('kb ' + verdict);
-    }
-    requestAnimationFrame(step);
-  }
-
-  /* One-screenshot readout of the whole ring.
-     The flicker is intermittent (Ben 2026-07-25: "maybe a third of the time"),
-     so a single trace cannot characterise it - the question is what differs
-     between the swipes that flash and the swipes that don't, which needs the
-     batch side by side. Opening claude.ai/code?ccmKb=1 renders every recorded
-     swipe at once so a batch of ten costs one screenshot instead of ten.
-     ?ccmKb=0 clears the ring. */
-  function kbPanel() {
-    var log = [];
-    try { log = JSON.parse(localStorage.getItem(KB_LOG_KEY) || '[]'); } catch (e) {}
-    var box = document.createElement('div');
-    box.id = 'ccm-kb-panel';
-    box.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#111;'
-      + 'color:#eee;font:11px/1.45 ui-monospace,Menlo,monospace;padding:10px;'
-      + 'overflow:auto;-webkit-overflow-scrolling:touch;white-space:pre-wrap;'
-      + 'word-break:break-word';
-    var head = 'ccm kb log - ' + log.length + ' swipe(s)\n'
-      + 'verdict h0=vv/inner f0=... fx[t tag/inputmode/kb/obs] pre-suppression\n'
-      + 'obs = observer had stamped it; NOOBS = it had not YET - ambiguous\n'
-      + '  between "the observer never matched this node" and "its microtask had\n'
-      + '  not run", i.e. mount and focus in one task. Do not read it as the first.\n'
-      + 'B = the guard-window blur() fired on that focus\n'
-      + '| marks: t dHeight dInner tag/inputmode/kb (S=same node, N=new)\n'
-      + '------------------------------------------------------------\n';
-    box.textContent = head + (log.length
-      ? log.map(function (l, i) { return (i + 1) + '. ' + l; }).join('\n\n')
-      : '(empty - swipe a few times, then reload this URL)');
-    var close = document.createElement('button');
-    close.textContent = 'close';
-    close.style.cssText = 'position:fixed;top:6px;right:8px;font-size:14px;'
-      + 'padding:6px 12px;background:#333;color:#eee;border:1px solid #666;'
-      + 'border-radius:8px';
-    close.addEventListener('click', function () { box.remove(); });
-    box.appendChild(close);
-    document.documentElement.appendChild(box);
-  }
-
-  try {
-    var kbQs = new URLSearchParams(location.search).get('ccmKb');
-    if (kbQs === '0') {
-      try { localStorage.removeItem(KB_LOG_KEY); } catch (e) {}
-    } else if (kbQs === '1') {
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', kbPanel);
-      } else {
-        kbPanel();
-      }
-    }
-  } catch (e) { /* no URLSearchParams / no location - nothing to show */ }
 
   function begin(touch, target) {
     tracking = false;
