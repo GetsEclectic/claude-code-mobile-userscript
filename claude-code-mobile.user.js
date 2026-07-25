@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.113.0
+// @version      1.114.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1794,8 +1794,14 @@ window.__ccmFlags = (function () {
 
   // Suppress the keyboard for a composer: inputmode="none" so focus doesn't
   // raise the VK. Stash the natural inputmode so a real tap can restore it.
-  function suppress(el) {
-    if (!el || el.getAttribute('data-ccm-kb')) return; // already handled
+  // force=true re-suppresses a composer that was already released by a tap -
+  // used right after a swipe switch, where a released-and-still-focused composer
+  // would otherwise raise the keyboard as the new route takes focus.
+  function suppress(el, force) {
+    if (!el) return;
+    var seen = el.getAttribute('data-ccm-kb');
+    if (seen && !force) return;          // already handled
+    if (seen === 'off') return;          // already suppressed; nothing to stash
     el.setAttribute('data-ccm-im', el.getAttribute('inputmode') || '');
     el.setAttribute('inputmode', 'none');
     el.setAttribute('data-ccm-kb', 'off');
@@ -1836,11 +1842,32 @@ window.__ccmFlags = (function () {
   }).observe(document.documentElement, { childList: true, subtree: true });
   scan(document.body || document.documentElement); // deep-link load already in a session
 
+  // Backstop for the observer's ordering. React can commit the composer and
+  // focus it in a layout effect within the SAME task, so the MutationObserver
+  // microtask above can land AFTER the focus - Gecko raises the keyboard, then
+  // drops it a tick later when inputmode="none" finally arrives. That is the
+  // flash. This capture-phase focusin runs synchronously inside the focus
+  // dispatch, before Gecko settles IME state for the newly focused element, so
+  // the attribute is already there when it looks.
+  //
+  // __ccmKbGuardUntil is armed by the swipe module just before it switches
+  // sessions: inside that window even an already-released composer is pushed
+  // back down, because landing in a new session should never come up typing.
+  document.addEventListener('focusin', function (e) {
+    var t = e.target;
+    var el = t && t.closest && t.closest(COMPOSER);
+    if (!el) return;
+    suppress(el, Date.now() < (window.__ccmKbGuardUntil || 0));
+  }, true);
+
   // A genuine tap on a suppressed composer releases it (keyboard comes up).
   document.addEventListener('pointerdown', function (e) {
     var t = e.target;
     var el = t && t.closest && t.closest(COMPOSER);
-    if (el) release(el);
+    if (el) {
+      window.__ccmKbGuardUntil = 0;   // a deliberate tap ends any swipe guard
+      release(el);
+    }
   }, true);
 })();
 
@@ -2134,6 +2161,12 @@ window.__ccmFlags = (function () {
   // reuses that snapshot, until he stops swiping for this long (then the next
   // swipe re-reads, picking up new sessions and the current ordering).
   var SNAP_MS = 90000;
+  // How long after a swipe the keyboard module force-suppresses anything the app
+  // focuses. Long enough to cover a cold route that fetches before it mounts the
+  // composer, short enough that a deliberate composer tap after landing still
+  // raises the keyboard normally.
+  var KB_GUARD_MS = 2500;
+  var COMPOSER = 'textarea, [contenteditable="true"]';
   var BLOCK = 'aside, [role="menu"], [role="dialog"], [role="listbox"], [role="slider"],'
     + ' input, textarea, select, [contenteditable="true"], .ProseMirror, form, audio, video';
 
@@ -2241,12 +2274,37 @@ window.__ccmFlags = (function () {
     toast((dir > 0 ? '▸ ' : '◂ ') + (tgt.t || 'Untitled')
       + '   ' + (next + 1) + '/' + list.length);
     var href = '/code/' + tgt.i;
+
+    /* Keyboard hygiene across the switch (fix for the v1.113 flash: the keyboard
+       rode up and dropped again on every swipe).
+
+       Three things have to be true or Gecko flashes the VK:
+
+       1. Nothing editable may be focused when the route changes. If Ben tapped
+          the composer earlier in this session it is still the activeElement and
+          already released (data-ccm-kb="live", natural inputmode restored), so
+          any re-focus of it during the transition raises the keyboard. Blur it.
+       2. The route change must not run inside the touchend dispatch. Gecko opens
+          the VK when focus moves to an editable while it is handling user input;
+          if the target route is warm, React can mount AND autofocus the new
+          composer synchronously inside our popstate dispatch, i.e. still inside
+          the touch event. Deferring by a task takes us out of that window.
+       3. Anything focused just after the nav must be suppressed on sight - see
+          the focusin guard in the keyboard module, armed by __ccmKbGuardUntil. */
+    window.__ccmKbGuardUntil = Date.now() + KB_GUARD_MS;
     try {
-      history.pushState({}, '', href);
-      window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
-    } catch (e) {
-      location.href = href;   // last resort: a full load still gets Ben there
-    }
+      var ae = document.activeElement;
+      if (ae && ae.closest && ae.closest(COMPOSER)) ae.blur();
+    } catch (e) { /* swallow */ }
+
+    setTimeout(function () {
+      try {
+        history.pushState({}, '', href);
+        window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+      } catch (e) {
+        location.href = href;   // last resort: a full load still gets Ben there
+      }
+    }, 0);
   }
 
   function begin(touch, target) {
