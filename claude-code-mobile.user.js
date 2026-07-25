@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.122.0
+// @version      1.123.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -973,7 +973,10 @@ window.__ccmFlags = (function () {
 
    What a beacon would contain (when enabled): error text/stack, failed-fetch
    path+status, error-boundary label text, viewport/layout dims, kb/drawer flags,
-   UA, online state. URLs are reduced to location.pathname (the query string is
+   UA, online state, and - only on a swipe whose composer focus could have raised
+   the soft keyboard - the timing of that focus relative to the swipe (see
+   'kbguard' in the keyboard module; attribute state and millisecond offsets, no
+   text). URLs are reduced to location.pathname (the query string is
    DROPPED, since claude.ai/code carries prefilled prompts in ?prompt=…). Message
    bodies, response payloads, and session text are never read.
 
@@ -985,6 +988,48 @@ window.__ccmFlags = (function () {
    or alter app behaviour (the fetch wrapper is fully transparent — it always
    returns the real promise/response untouched, even if logging fails). */
 (function () {
+  /* One-tap enable, for a phone. The three values below are settable by hand on
+     a desktop and by nothing at all on Firefox Android, which has no devtools -
+     i.e. exactly the device that has the bug is the device that cannot opt in.
+     So accept them from a link:
+
+         https://claude.ai/code#ccmtelem=<base64url of {"u":…,"t":…,"k":…}>
+
+     and `#ccmtelem=off` to clear. Behind a confirm() that names the destination
+     HOST, so a link from someone else cannot quietly point a stranger's
+     diagnostics at their own server. Deferred to DOMContentLoaded because
+     @run-at document-start is too early for a modal, then reloaded so the
+     module below initialises with the values on the very next tick rather than
+     leaving telemetry half-armed for the rest of the page's life. The values
+     never enter this public script - only the link carries them. */
+  try {
+    if (/(?:^|[#&])ccmtelem=/.test(location.hash || '')) {
+      document.addEventListener('DOMContentLoaded', function () {
+        try {
+          var raw = decodeURIComponent(
+            /(?:^|[#&])ccmtelem=([^&]+)/.exec(location.hash)[1]);
+          history.replaceState(history.state, '',
+                               location.pathname + location.search);
+          if (raw === 'off') {
+            localStorage.removeItem('ccmTelemUrl');
+            localStorage.removeItem('ccmTelemToken');
+            localStorage.removeItem('ccmTelemPubKey');
+            alert('CCM diagnostics disabled.');
+          } else {
+            var cfg = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
+            if (!cfg || !cfg.u || !cfg.k) return;
+            if (!confirm('Send CCM diagnostics to ' + new URL(cfg.u).host + '?')) return;
+            localStorage.setItem('ccmTelemUrl', cfg.u);
+            localStorage.setItem('ccmTelemPubKey', cfg.k);
+            if (cfg.t) localStorage.setItem('ccmTelemToken', cfg.t);
+            else localStorage.removeItem('ccmTelemToken');
+          }
+          location.reload();
+        } catch (e) {}
+      });
+    }
+  } catch (e) {}
+
   // OPT-IN gate: nothing is sent unless the user configured their own endpoint.
   var ENDPOINT = null, TOKEN = null, PUBKEY_B64 = null;
   try {
@@ -1819,6 +1864,82 @@ window.__ccmFlags = (function () {
   var BLUR_MAX = 6;
   var blurEpoch = 0, blurs = 0;
 
+  /* Flash-cause telemetry. ImeTracker over adb answered WHETHER the keyboard
+     flashed, but it cannot answer WHY on Ben's own usage: the phone's main
+     logcat buffer retains about 92 seconds of these tags (measured - one dump
+     held 11,461 lines spanning 13:13:47 to 13:15:19), so a passive harvest
+     watches ~2 minutes of every hour and would report "not reproducing" from a
+     window it never looked at. Ben's call, and it is the right one: don't use
+     logcat for telemetry.
+
+     So record the cause candidates page-side, where nothing rolls over. The
+     proxy for "this focus flashed the keyboard" was established WITH ImeTracker
+     rather than assumed: Gecko emits onRequestShow on the same millisecond as
+     the focus while the composer still reads `ce/-/-`, and emits nothing when
+     inputmode="none" is already on the element before focus lands. A focusin
+     whose target was NOT already suppressed at entry is therefore a flash
+     candidate; one that was is not.
+
+     The fields separate the three live hypotheses, which is the whole point -
+     no fix ships off a guess about which one it is:
+       dt < 0              the focus BEAT the swipe; the guard was not armed yet
+       dt > guard          the guard expired before the composer focused
+       g && !b && n >= cap BLUR_MAX exhausted inside one window
+       !obs                the MutationObserver never matched the node at all
+     Silent unless telemetry is opted in, and silent for a clean swipe - only a
+     swipe carrying at least one candidate sends, with the running clean count
+     riding along so the candidate rate has a denominator. */
+  var focusLog = [], clearedAt = 0, cleanSwipes = 0;
+
+  function noteFocus(el, guarded, blurred, until) {
+    try {
+      focusLog.push({
+        t: Date.now(),
+        obs: el.getAttribute('data-ccm-obs') ? 1 : 0,
+        kb: el.getAttribute('data-ccm-kb') || '-',
+        im: el.getAttribute('inputmode') || '-',
+        g: guarded ? 1 : 0, b: blurred ? 1 : 0, n: blurs, u: until,
+      });
+      if (focusLog.length > 24) focusLog.shift();
+    } catch (e) {}
+  }
+
+  function report(t0, until) {
+    // A focus up to 2s BEFORE the arm still belongs to this swipe: the finger is
+    // already down well before the module decides a swipe happened, so a focus
+    // (and its show) can precede the arm entirely.
+    var ev = [], risky = 0;
+    for (var i = 0; i < focusLog.length; i++) {
+      var f = focusLog[i];
+      if (f.t < t0 - 2000 || f.t > until + 500) continue;
+      // c: a show was issued at all (composer not already suppressed at entry).
+      // r: that show was NOT cancelled inside the same task, i.e. the animation
+      //    had time to draw - the visible flash. A show that the guard blurred
+      //    synchronously is the working path and must not beacon, or every swipe
+      //    reports and the signal drowns in its own denominator.
+      var c = f.im !== 'none' ? 1 : 0;
+      var r = c && !(f.g && f.b) ? 1 : 0;
+      risky += r;
+      ev.push({ dt: f.t - t0, obs: f.obs, kb: f.kb, im: f.im,
+                g: f.g, b: f.b, n: f.n, c: c, r: r });
+    }
+    if (!risky) { cleanSwipes++; return; }
+    window.__ccmTelem('kbguard', {
+      guard: until - t0, cap: BLUR_MAX, blurs: blurs,
+      clr: clearedAt > t0 - 2000 ? clearedAt - t0 : null,
+      clean: cleanSwipes, ev: ev,
+    }, null);   // no dedupe signature: every candidate swipe is its own datum
+    cleanSwipes = 0;
+  }
+
+  // Called by the swipe module the instant it arms the guard.
+  window.__ccmKbSwipeArmed = function (t0, until) {
+    if (typeof window.__ccmTelem !== 'function') return;
+    setTimeout(function () {
+      try { report(t0, until); } catch (e) {}
+    }, Math.max(0, until - Date.now()) + 500);
+  };
+
   // Suppress the keyboard for a composer: inputmode="none" so focus doesn't
   // raise the VK. Stash the natural inputmode so a real tap can restore it.
   // force=true re-suppresses a composer that was already released by a tap -
@@ -1923,6 +2044,7 @@ window.__ccmFlags = (function () {
     if (guarded && until !== blurEpoch) { blurEpoch = until; blurs = 0; }
     var doBlur = guarded && blurs < BLUR_MAX;
     if (doBlur) blurs++;
+    noteFocus(el, guarded, doBlur, until);   // BEFORE suppress() - it reads entry state
     suppress(el, guarded);
     if (doBlur) {
       try { el.blur(); } catch (err2) { /* swallow */ }
@@ -1934,6 +2056,12 @@ window.__ccmFlags = (function () {
     var t = e.target;
     var el = t && t.closest && t.closest(COMPOSER);
     if (el) {
+      // Recorded because a SWIPE that starts on the composer comes through here
+      // too: it clears the guard and restores the natural inputmode before the
+      // swipe has even been recognised, which would arm a flash the guard can no
+      // longer stop. `clr` in the beacon is how that shows up as a measurement
+      // instead of a theory.
+      clearedAt = Date.now();
       window.__ccmKbGuardUntil = 0;   // a deliberate tap ends any swipe guard
       release(el);
     }
@@ -2368,7 +2496,12 @@ window.__ccmFlags = (function () {
           the touch event. Deferring by a task takes us out of that window.
        3. Anything focused just after the nav must be suppressed on sight - see
           the focusin guard in the keyboard module, armed by __ccmKbGuardUntil. */
-    window.__ccmKbGuardUntil = Date.now() + KB_GUARD_MS;
+    var kbT0 = Date.now();
+    window.__ccmKbGuardUntil = kbT0 + KB_GUARD_MS;
+    // Opens the diagnostic window for this swipe (no-op unless telemetry is on).
+    try {
+      if (window.__ccmKbSwipeArmed) window.__ccmKbSwipeArmed(kbT0, kbT0 + KB_GUARD_MS);
+    } catch (e) { /* swallow */ }
     try {
       var ae = document.activeElement;
       if (ae && ae.closest && ae.closest(COMPOSER)) ae.blur();
