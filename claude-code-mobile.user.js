@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.112.0
-// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
+// @version      1.113.0
+// @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -2060,6 +2060,244 @@ window.__ccmFlags = (function () {
   new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
 })();
 
+/* v1.113 - swipe left / right to page through sessions.
+
+   Ben's ask: on the phone, move between sessions without opening the drawer.
+
+   ORDER SOURCE - the API cache, not the drawer DOM. The drawer's Recents
+   section renders only ~4 rows (measured 2026-07-25 in-session: 4
+   a[href^="/code/session_"] anchors, with no "view all"), so DOM order would
+   cap the swipe run at four sessions. The idle-badge companion below already
+   polls GET /v1/sessions every 45s, which returns every session; it now also
+   writes an ordered list of live (non-archived) sessions to localStorage
+   ccmSessionNav as [{i: id, t: title}], newest-active first. That costs no
+   extra network, survives reloads, and drops archived/deleted/pending
+   sessions - the same classification the status dots use.
+
+   NAVIGATION - history.pushState + a synthetic popstate. The app is TanStack
+   Router (window.__TSR_ROUTER__; no Next.js, no react-router), and its session
+   route is /code/<session id>. Measured 2026-07-25 via bin/ccm-domdump: from
+   an open session, pushState to another session's path followed by
+   dispatchEvent(new PopStateEvent('popstate')) changed location.pathname AND
+   re-rendered the view ("Loading session" in the title bar) with the injected
+   probe div still attached, i.e. a real client-side route change and not a
+   full reload. location.href is kept only as a throw-path fallback.
+   Deliberately NOT used: clicking a drawer anchor (only ~4 exist), or calling
+   __TSR_ROUTER__.navigate (page-global access is unreliable from the
+   Violentmonkey sandbox, and its arg shape is an unverified guess).
+
+   GESTURE SCOPE - a swipe has to lose every argument with an existing gesture:
+     - Phone widths only, and only on a /code/session_* route.
+     - Single touch only; a second finger (pinch-zoom) cancels the gesture.
+     - Never inside the composer, a menu/dialog/listbox, the sidebar, or any
+       form control; never while the drawer is open.
+     - Never when a horizontally scrollable ancestor is under the finger -
+       transcript code blocks render as div.overflow-x-auto (measured
+       scrollWidth 566 vs clientWidth 386), and stealing those swipes would
+       make wide code unreadable.
+     - Never with a live text selection: after a long-press, a horizontal drag
+       is the user moving a selection handle, not paging.
+     - Ignores gestures starting within EDGE px of either screen edge, which is
+       where the browser's own back/forward edge gestures live.
+     - Requires |dx| >= MIN_DX, |dx| >= |dy| * RATIO, and a gesture under
+       MAX_MS, so vertical transcript scrolling and slow drags are untouched.
+   Left = next (further down the list, older). Right = previous (newer). Both
+   ends stop rather than wrap, and say so in the toast, so a swipe can never
+   silently teleport across the whole list.
+
+   LISTENER ORDER matters: the v1.110 gesture firewall directly below calls
+   stopImmediatePropagation on transcript touchstart, and it registers on the
+   same node (window, capture). This IIFE is placed BEFORE it on purpose so our
+   touchstart runs first. As a belt-and-braces guard against a future reorder,
+   a touchmove that arrives with no recorded touchstart starts the gesture from
+   that point instead (costing only the few px already travelled), so the
+   feature keeps working even if the firewall ever ends up ahead of us.
+
+   Kill switch: localStorage ccmSwipeNav = '0'. */
+(function () {
+  var flagOn = true;
+  try { flagOn = localStorage.getItem('ccmSwipeNav') !== '0'; } catch (e) {}
+  if (!flagOn) return;
+
+  var MQ = '(max-width: 900px)';
+  var NKEY = 'ccmSessionNav';
+  var MIN_DX = 64;      // px of horizontal travel before it counts as a swipe
+  var RATIO = 1.6;      // |dx| must beat |dy| by this much (vs. a diagonal scroll)
+  var MAX_MS = 800;     // slower than this is a drag, not a swipe
+  var EDGE = 24;        // leave the browser's edge gestures alone
+  var LOCK_MS = 600;    // ignore a second swipe while the first is still landing
+  // How long a paging run keeps its frozen copy of the order. The cached list
+  // is sorted by updated_at, which churns: a session that starts working bubbles
+  // to the top, so re-reading it between swipes would renumber the list under
+  // Ben's finger - swipe left then right would not come back to where he was.
+  // So the first swipe of a run snapshots the order and every swipe after it
+  // reuses that snapshot, until he stops swiping for this long (then the next
+  // swipe re-reads, picking up new sessions and the current ordering).
+  var SNAP_MS = 90000;
+  var BLOCK = 'aside, [role="menu"], [role="dialog"], [role="listbox"], [role="slider"],'
+    + ' input, textarea, select, [contenteditable="true"], .ProseMirror, form, audio, video';
+
+  var sx = 0, sy = 0, st = 0, tracking = false, sawStart = false, lastNav = 0;
+  var snap = null, snapAt = 0;   // frozen order for the current paging run
+
+  function sessionId() {
+    var m = /^\/code\/(session_[A-Za-z0-9_-]+)/.exec(location.pathname);
+    return m ? m[1] : null;
+  }
+  function navList() {
+    try {
+      var a = JSON.parse(localStorage.getItem(NKEY) || '[]');
+      return Array.isArray(a) ? a : [];
+    } catch (e) { return []; }
+  }
+  // Same dual signal as the firewall's drawerOpen (on-screen AND opaque): the
+  // real device translates a closed drawer off-screen, the headless harness
+  // animates its opacity instead.
+  function drawerOpen() {
+    try {
+      var b = document.querySelector('.dframe-sidebar-body');
+      if (!b || !b.offsetParent) return false;
+      var r = b.getBoundingClientRect();
+      if (r.width <= 0 || r.left < 0 || r.left >= window.innerWidth) return false;
+      if (parseFloat(getComputedStyle(b).opacity || '1') < 0.1) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+  function hScrollable(node) {
+    for (var n = node, d = 0; n && n.nodeType === 1 && d < 14; n = n.parentElement, d++) {
+      if (n.scrollWidth > n.clientWidth + 2) {
+        var ox = getComputedStyle(n).overflowX;
+        if (ox === 'auto' || ox === 'scroll' || ox === 'overlay') return true;
+      }
+    }
+    return false;
+  }
+  function hasSelection() {
+    try {
+      var s = window.getSelection();
+      return !!(s && s.rangeCount > 0 && !s.isCollapsed);
+    } catch (e) { return false; }
+  }
+
+  // One reused pill under the title bar, naming where the swipe landed and the
+  // position in the list, so paging never feels like the app jumped on its own.
+  var toastEl = null, toastTimer = 0;
+  function toast(msg) {
+    try {
+      if (!toastEl || !toastEl.isConnected) {
+        toastEl = document.createElement('div');
+        toastEl.id = 'ccm-swipe-toast';
+        toastEl.setAttribute('role', 'status');
+        toastEl.style.cssText = 'position:fixed;top:52px;left:50%;transform:translateX(-50%);'
+          + 'max-width:82vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+          + 'background:rgba(0,0,0,0.86);color:#fff;font-size:13px;line-height:1.2;'
+          + 'padding:8px 13px;border-radius:999px;z-index:2147483000;pointer-events:none;'
+          + 'opacity:0;transition:opacity 0.18s ease;';
+        document.body.appendChild(toastEl);
+      }
+      toastEl.textContent = msg;
+      // Force a reflow so a back-to-back second toast re-animates rather than
+      // sitting at opacity 1 with no visible change.
+      void toastEl.offsetWidth;
+      toastEl.style.opacity = '1';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () {
+        if (toastEl) toastEl.style.opacity = '0';
+      }, 1500);
+    } catch (e) {}
+  }
+
+  function indexOfIn(list, id) {
+    for (var i = 0; i < list.length; i++) if (list[i] && list[i].i === id) return i;
+    return -1;
+  }
+
+  function go(dir) {
+    var id = sessionId();
+    if (!id) return;
+    // Continue the run on the frozen order; start a fresh one when the run has
+    // gone cold, or when the snapshot doesn't know the session we're on (Ben
+    // navigated somewhere else in between, so the run is over anyway).
+    var list = snap, idx = -1;
+    if (list && Date.now() - snapAt < SNAP_MS) idx = indexOfIn(list, id);
+    if (idx < 0) {
+      list = navList();
+      idx = indexOfIn(list, id);
+      snap = idx >= 0 ? list : null;
+    }
+    snapAt = Date.now();
+    if (idx < 0) {
+      // Cold cache, or a session created since the last poll. Ask the companion
+      // for a fresh list so the next swipe works instead of failing twice.
+      toast('Session list not ready');
+      try { if (window.__ccmNavRefresh) window.__ccmNavRefresh(); } catch (e) {}
+      return;
+    }
+    var next = idx + dir;
+    if (next < 0) { toast('Newest session'); return; }
+    if (next >= list.length) { toast('Oldest session'); return; }
+    var tgt = list[next];
+    lastNav = Date.now();
+    toast((dir > 0 ? '▸ ' : '◂ ') + (tgt.t || 'Untitled')
+      + '   ' + (next + 1) + '/' + list.length);
+    var href = '/code/' + tgt.i;
+    try {
+      history.pushState({}, '', href);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+    } catch (e) {
+      location.href = href;   // last resort: a full load still gets Ben there
+    }
+  }
+
+  function begin(touch, target) {
+    tracking = false;
+    if (!touch || !target || !target.closest) return;
+    if (!window.matchMedia(MQ).matches) return;
+    if (!sessionId()) return;
+    if (Date.now() - lastNav < LOCK_MS) return;
+    if (target.closest(BLOCK)) return;
+    if (drawerOpen()) return;
+    if (hasSelection()) return;
+    if (touch.clientX < EDGE || touch.clientX > window.innerWidth - EDGE) return;
+    if (hScrollable(target)) return;
+    sx = touch.clientX; sy = touch.clientY; st = Date.now(); tracking = true;
+  }
+
+  function onStart(e) {
+    sawStart = true;
+    if (e.touches && e.touches.length > 1) { tracking = false; return; }
+    begin(e.touches && e.touches[0], e.target);
+  }
+  function onMove(e) {
+    if (!sawStart) {           // firewall ate our touchstart: start from here
+      sawStart = true;
+      if (!e.touches || e.touches.length !== 1) return;
+      begin(e.touches[0], e.target);
+      return;
+    }
+    if (tracking && e.touches && e.touches.length > 1) tracking = false;
+  }
+  function onEnd(e) {
+    sawStart = false;
+    if (!tracking) return;
+    tracking = false;
+    var t = e.changedTouches && e.changedTouches[0];
+    if (!t) return;
+    if (Date.now() - st > MAX_MS) return;
+    var dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Math.abs(dx) < MIN_DX) return;
+    if (Math.abs(dx) < Math.abs(dy) * RATIO) return;
+    if (hasSelection()) return;   // the drag moved a selection handle, not the page
+    go(dx < 0 ? 1 : -1);
+  }
+  function onCancel() { sawStart = false; tracking = false; }
+
+  window.addEventListener('touchstart', onStart, true);
+  window.addEventListener('touchmove', onMove, true);
+  window.addEventListener('touchend', onEnd, true);
+  window.addEventListener('touchcancel', onCancel, true);
+})();
+
 /* v1.110 layer 1 - gesture firewall. Suppressing the menu after it opens
    (v1.108) and even force-closing it (v1.109) still left the selection anchors
    ungrabbable on Ben's phone, which means the damage happens UPSTREAM: the
@@ -2355,6 +2593,13 @@ window.__ccmFlags = (function () {
   var AKEY = 'ccmSessionAges';     // name -> updated_at epoch ms (idle-age labels)
   var UKEY = 'ccmSessionUnread';   // name -> 1 (waiting AND not yet viewed)
   var PKEY = 'ccmSessionPrev';     // name -> {t: updated_at ms, b: bucket, f: flip-baseline ms}
+  // v1.113 - ordered nav list consumed by the swipe-between-sessions module:
+  // [{i: session id, t: title}, ...], most-recently-active first, live
+  // (non-archived) sessions only. Written here rather than in the swipe module
+  // because this IIFE already owns the one /v1/sessions poll; a second fetch
+  // for the same 380KB payload would double the phone's cost for no new data.
+  var NKEY = 'ccmSessionNav';
+  var NAV_MAX = 40;                // deep enough to page through, small in localStorage
   // Put-away / placeholder statuses never count, regardless of turn state.
   var DROP = { pending: 1, archived: 1, deleted: 1 };
   // Freshness window: a session that is actively running a turn bumps
@@ -2802,6 +3047,7 @@ window.__ccmFlags = (function () {
       var unread = {};
       var prev = prevCached();
       var nextPrev = {};   // rebuilt each poll => prunes archived/deleted rows
+      var nav = [];        // v1.113 swipe order, sorted below
       var nowMs = Date.now();
       for (var i = 0; i < arr.length; i++) {
         var s = arr[i];
@@ -2820,12 +3066,22 @@ window.__ccmFlags = (function () {
         if (nm && !isNaN(ts)) ages[nm] = ts;
         if (nm && isWaitingState(state) && s.unread) unread[nm] = 1;
         if (nm && state) nextPrev[nm] = sessionPrevEntry(s, pe, nowMs);
+        // Swipe order (v1.113). state===null is exactly the archived/deleted/
+        // pending set, so those never become swipe destinations. s.id is the
+        // route segment: /code/<id> (measured 2026-07-25 against the live API).
+        if (state && s.id) nav.push({ i: s.id, t: nm || 'Untitled', u: isNaN(ts) ? 0 : ts });
       }
+      // The endpoint's own ordering is not a contract (see block comment), and
+      // it demonstrably is NOT updated_at-sorted, so sort client-side: newest
+      // first, matching how the app's own Recents list reads.
+      nav.sort(function (a, b) { return b.u - a.u; });
+      nav = nav.slice(0, NAV_MAX).map(function (e) { return { i: e.i, t: e.t }; });
       try { localStorage.setItem(KEY, String(n)); } catch (e) {}
       try { localStorage.setItem(MKEY, JSON.stringify(map)); } catch (e) {}
       try { localStorage.setItem(AKEY, JSON.stringify(ages)); } catch (e) {}
       try { localStorage.setItem(UKEY, JSON.stringify(unread)); } catch (e) {}
       try { localStorage.setItem(PKEY, JSON.stringify(nextPrev)); } catch (e) {}
+      if (nav.length) { try { localStorage.setItem(NKEY, JSON.stringify(nav)); } catch (e) {} }
       paint();
       paintDots();
       paintAges();
@@ -2841,6 +3097,13 @@ window.__ccmFlags = (function () {
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
   });
+
+  // The swipe module (above) reads NKEY straight out of localStorage so it
+  // paints from cache on the very first touch of a cold load; this lets it ask
+  // for a fresh poll when the current session isn't in that cache yet (a
+  // brand-new session, or a list older than POLL_MS). All IIFEs in this
+  // userscript share one sandbox window, same as window.__ccmDbg.
+  window.__ccmNavRefresh = refresh;
 
   paint();        // instant: show the cached count
   paintDots();    // instant: fix dots from the cached map
