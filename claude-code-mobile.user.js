@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.116.0
+// @version      1.117.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -2363,25 +2363,52 @@ window.__ccmFlags = (function () {
     var vv = window.visualViewport;
     if (!vv) return;
     var t0 = Date.now();
-    function gap() { return Math.round(window.innerHeight - vv.height); }
-    var base = gap(), last = base, peak = base, peakAt = 0, marks = [];
+    /* Measure the ABSOLUTE viewport height, not innerHeight - visualViewport
+       .height. That gap is the obvious keyboard proxy and it is useless in THIS
+       script: the ccmIW module (v1.94) appends interactive-widget=resizes-content
+       to the viewport meta precisely so the soft keyboard shrinks the layout
+       viewport in lockstep with the visual one, which pins the gap at ~0 whether
+       the keyboard is up or down. v1.116 measured that gap and returned 15
+       consecutive "flat" traces with zero marks across a batch in which Ben saw
+       the flicker - a blind gauge reading clean, not an absent bug. Under
+       resizes-content the keyboard is visible as a DROP in the absolute height,
+       so that is what this samples; innerHeight is carried alongside to confirm
+       the two really do move together. */
+    function h() { return Math.round(vv.height); }
+    var base = h(), last = base, low = base, lowAt = 0, marks = [];
+    var baseIH = Math.round(window.innerHeight);
     var f0 = focusDesc(), n0 = f0.el;
+    /* Independent second signal. Height alone cannot distinguish "the keyboard
+       never rose" from "the gauge is blind again" - which is exactly the trap
+       v1.116 fell into - so record every focus change during the window too.
+       Flat height WITH a composer focus is a measurement problem; flat height
+       with NO focus at all is real evidence the switch never focused anything
+       and the flicker has some other trigger entirely. */
+    var fx = [];
+    function onFocus() {
+      if (fx.length < 4) fx.push((Date.now() - t0) + 'ms ' + focusDesc(n0).s);
+    }
+    document.addEventListener('focusin', onFocus, true);
     function step() {
-      var g = gap();
-      if (g > peak) { peak = g; peakAt = Date.now() - t0; }
-      if (Math.abs(g - last) > 24) {     // ignore URL-bar jitter, catch the VK
+      var cur = h();
+      if (cur < low) { low = cur; lowAt = Date.now() - t0; }
+      if (Math.abs(cur - last) > 24) {   // ignore URL-bar jitter, catch the VK
         // Cap the mark list: a long tail of URL-bar scroll jitter would push
         // the informative first transitions off the end of the panel line.
         if (marks.length < 6) {
-          marks.push((Date.now() - t0) + 'ms ' + (g > last ? '+' : '') + (g - last)
+          var dih = Math.round(window.innerHeight) - baseIH;
+          marks.push((Date.now() - t0) + 'ms ' + (cur > last ? '+' : '') + (cur - last)
+            + ' ih' + (dih >= 0 ? '+' : '') + dih
             + ' ' + focusDesc(n0).s);
         }
-        last = g;
+        last = cur;
       }
       if (Date.now() - t0 < 3500) { requestAnimationFrame(step); return; }
-      var rose = peak - base > 100;      // a real VK, not a URL-bar collapse
-      var verdict = rose ? ('UP ' + (peak - base) + '@' + peakAt + 'ms') : 'flat';
-      var line = verdict + ' f0=' + f0.s
+      var rose = base - low > 100;       // a real VK, not URL-bar chrome
+      var verdict = rose ? ('UP -' + (base - low) + '@' + lowAt + 'ms') : 'flat';
+      document.removeEventListener('focusin', onFocus, true);
+      var line = verdict + ' h0=' + base + '/' + baseIH + ' f0=' + f0.s
+        + (fx.length ? ' fx[' + fx.join(', ') + ']' : ' fx[none]')
         + (marks.length ? ' | ' + marks.join(' | ') : '');
       try { localStorage.setItem('ccmKbDiagLast', line); } catch (e) {}
       kbLogPush(line);
@@ -2409,7 +2436,8 @@ window.__ccmFlags = (function () {
       + 'overflow:auto;-webkit-overflow-scrolling:touch;white-space:pre-wrap;'
       + 'word-break:break-word';
     var head = 'ccm kb log - ' + log.length + ' swipe(s)\n'
-      + 'verdict pk@t f0=tag/inputmode/data-ccm-kb | marks (S=same node, N=new)\n'
+      + 'verdict h0=vv/inner f0=tag/inputmode/data-ccm-kb fx[focus events]\n'
+      + '| marks: t dHeight dInner tag/inputmode/kb (S=same node, N=new)\n'
       + '------------------------------------------------------------\n';
     box.textContent = head + (log.length
       ? log.map(function (l, i) { return (i + 1) + '. ' + l; }).join('\n\n')
