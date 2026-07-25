@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.119.0
+// @version      1.120.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1823,40 +1823,96 @@ window.__ccmFlags = (function () {
     } catch (e) { /* swallow */ }
   }
 
+  // Mark every composer the observer has actually SEEN, whether or not suppress()
+  // then had anything to do. Without this there is no way to tell the two causes
+  // of "focused while unsuppressed" apart: the observer never matched the node
+  // (a coverage gap) versus the observer matched it too late (a timing race).
+  // kbDiag reports this attribute at focus time, so the trace answers it.
+  function mark(el) {
+    if (el && !el.getAttribute('data-ccm-obs')) el.setAttribute('data-ccm-obs', '1');
+  }
+
   function scan(root) {
     if (!root || root.nodeType !== 1) return;
-    if (root.matches && root.matches(COMPOSER)) suppress(root);
+    if (root.matches && root.matches(COMPOSER)) { mark(root); suppress(root); }
     if (root.querySelectorAll) {
       var nodes = root.querySelectorAll(COMPOSER);
-      for (var i = 0; i < nodes.length; i++) suppress(nodes[i]);
+      for (var i = 0; i < nodes.length; i++) { mark(nodes[i]); suppress(nodes[i]); }
     }
   }
 
   // Stamp composers as they mount. @run-at document-start means this observer is
   // watching before React commits the composer, beating its post-commit autofocus.
+  //
+  // ATTRIBUTES, not just childList. A childList-only observer matches the
+  // COMPOSER selector at insertion time, so it misses a composer whose element
+  // is inserted plain and only becomes `contenteditable="true"` afterwards - the
+  // node is never stamped at all, and the first thing to touch it is the focusin
+  // backstop, by which point Gecko has already committed to opening the keyboard.
+  // Measured on Ben's phone (v1.119, 8 swipes): every focus reported the composer
+  // as `ce/-/-`, i.e. holding focus with neither inputmode nor data-ccm-kb set.
   new MutationObserver(function (muts) {
     for (var i = 0; i < muts.length; i++) {
-      var added = muts[i].addedNodes;
+      var m = muts[i];
+      if (m.type === 'attributes') { scan(m.target); continue; }
+      var added = m.addedNodes;
       for (var j = 0; j < added.length; j++) scan(added[j]);
     }
-  }).observe(document.documentElement, { childList: true, subtree: true });
+  }).observe(document.documentElement, {
+    childList: true, subtree: true,
+    attributes: true, attributeFilter: ['contenteditable'],
+  });
   scan(document.body || document.documentElement); // deep-link load already in a session
 
   // Backstop for the observer's ordering. React can commit the composer and
   // focus it in a layout effect within the SAME task, so the MutationObserver
-  // microtask above can land AFTER the focus - Gecko raises the keyboard, then
-  // drops it a tick later when inputmode="none" finally arrives. That is the
-  // flash. This capture-phase focusin runs synchronously inside the focus
-  // dispatch, before Gecko settles IME state for the newly focused element, so
-  // the attribute is already there when it looks.
+  // microtask above can land AFTER the focus.
+  //
+  // IMPORTANT - this backstop CANNOT prevent the keyboard flash, only cancel it.
+  // An earlier version of this comment claimed the capture-phase focusin runs
+  // "before Gecko settles IME state for the newly focused element". ImeTracker on
+  // Ben's phone disproves that: Gecko emits onRequestShow ORIGIN_CLIENT/
+  // SHOW_SOFT_INPUT when focus is applied - before the DOM focus event is
+  // dispatched - and the inputmode="none" written here lands afterwards, so
+  // 169-193ms later Gecko emits onRequestHide and the in-flight show dies with
+  // `onCancelled at PHASE_CLIENT_ANIMATION_CANCEL`. That cancel IS the flicker
+  // Ben sees. Preventing it requires the attribute to be present BEFORE focus,
+  // which is the observer's job above - this listener is the safety net for
+  // anything the observer still misses, and a net that cancels is better than a
+  // keyboard that stays up, but it is not the fix.
+  //
+  // On WINDOW, not document: capture runs outermost-first, so this is the
+  // earliest point in the DOM event path where the attribute can be written.
   //
   // __ccmKbGuardUntil is armed by the swipe module just before it switches
   // sessions: inside that window even an already-released composer is pushed
   // back down, because landing in a new session should never come up typing.
-  document.addEventListener('focusin', function (e) {
+  window.addEventListener('focusin', function (e) {
     var t = e.target;
     var el = t && t.closest && t.closest(COMPOSER);
     if (!el) return;
+    /* Record the composer's state BEFORE suppress() touches it, here rather
+       than in kbDiag. kbDiag used to keep its own window-capture focusin
+       listener, but now that this suppressor is also on window capture - and
+       registers at document-start, so first - any listener kbDiag adds later
+       necessarily observes the ALREADY-SUPPRESSED element. That is exactly the
+       mistake v1.117 made on `document`, and moving both to `window` would
+       reproduce it. The module that mutates the attribute is the only one that
+       can honestly report what was there beforehand. */
+    try {
+      var ring = window.__ccmKbPre || (window.__ccmKbPre = []);
+      ring.push({
+        t: Date.now(),
+        tag: el.getAttribute('contenteditable') === 'true'
+          ? 'ce' : el.tagName.toLowerCase(),
+        im: el.getAttribute('inputmode') || '-',
+        kb: el.getAttribute('data-ccm-kb') || '-',
+        obs: el.getAttribute('data-ccm-obs') ? 'obs' : 'NOOBS',
+        fresh: el !== window.__ccmKbLastEl,
+      });
+      if (ring.length > 16) ring.shift();
+      window.__ccmKbLastEl = el;
+    } catch (err) { /* diagnostics must never break the suppression below */ }
     suppress(el, Date.now() < (window.__ccmKbGuardUntil || 0));
   }, true);
 
@@ -2395,20 +2451,24 @@ window.__ccmFlags = (function () {
        Flat height WITH a composer focus is a measurement problem; flat height
        with NO focus at all is real evidence the switch never focused anything
        and the flicker has some other trigger entirely. */
-    var fx = [];
-    function onFocus() {
-      if (fx.length < 5) fx.push((Date.now() - t0) + 'ms ' + focusDesc(n0).s);
+    /* Read the pre-suppression focus records that noKbOnSwitch writes into
+       window.__ccmKbPre, rather than registering a listener here. The suppressor
+       is on window capture and registers at document-start, so any listener
+       added at swipe time runs after it and could only ever report the
+       ALREADY-SUPPRESSED state - which is the exact mistake v1.117 made on
+       `document`. Only ring entries from this swipe's t0 onward belong to this
+       row, hence the index watermark. */
+    var preFrom = (window.__ccmKbPre || []).length;
+    function collectFx() {
+      var ring = window.__ccmKbPre || [];
+      var out = [];
+      for (var i = preFrom; i < ring.length && out.length < 5; i++) {
+        var r = ring[i];
+        out.push((r.t - t0) + 'ms ' + r.tag + '/' + r.im + '/' + r.kb
+          + '/' + r.obs + (r.fresh ? ' N' : ' S'));
+      }
+      return out;
     }
-    /* On WINDOW, not document, and that placement is the whole point.
-       noKbOnSwitch's suppressor is a capture-phase focusin listener on
-       `document`, and capture runs outermost-first, so a window listener sees
-       the element BEFORE the suppressor stamps it. v1.117 listened on document
-       and was therefore registered second on the same node, so every trace read
-       `ce/none/off` - which only proved the suppressor had already run, and said
-       nothing about whether it won the race. Reading pre-suppression state is
-       what distinguishes "focus beat the suppression" (arrives bare, `-/-`)
-       from "suppression landed and the keyboard rose anyway" (`none/off`). */
-    window.addEventListener('focusin', onFocus, true);
     function step() {
       var cur = h();
       if (cur < low) { low = cur; lowAt = Date.now() - t0; }
@@ -2426,7 +2486,7 @@ window.__ccmFlags = (function () {
       if (Date.now() - t0 < 5200) { requestAnimationFrame(step); return; }
       var rose = base - low > 100;       // a real VK, not URL-bar chrome
       var verdict = rose ? ('UP -' + (base - low) + '@' + lowAt + 'ms') : 'flat';
-      window.removeEventListener('focusin', onFocus, true);
+      var fx = collectFx();
       /* Wall-clock, not just elapsed ms. The keyboard is measured OUTSIDE the
          page (Android ImeTracker via logcat, since a brief flash never resizes
          the viewport and no in-page signal can see it), so the two timelines
@@ -2465,7 +2525,8 @@ window.__ccmFlags = (function () {
       + 'overflow:auto;-webkit-overflow-scrolling:touch;white-space:pre-wrap;'
       + 'word-break:break-word';
     var head = 'ccm kb log - ' + log.length + ' swipe(s)\n'
-      + 'verdict h0=vv/inner f0=tag/inputmode/data-ccm-kb fx[focus events]\n'
+      + 'verdict h0=vv/inner f0=... fx[t tag/inputmode/kb/obs] pre-suppression\n'
+      + 'NOOBS = observer never stamped it; obs = it had been seen\n'
       + '| marks: t dHeight dInner tag/inputmode/kb (S=same node, N=new)\n'
       + '------------------------------------------------------------\n';
     box.textContent = head + (log.length
