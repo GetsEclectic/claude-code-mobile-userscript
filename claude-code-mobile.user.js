@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.127.0
+// @version      1.128.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -16,6 +16,10 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.128: rule 16b pays the bottom safe-area inset the app never pays, so the
+   dock's last row (permission mode / model / effort) stops being clipped by the
+   Android gesture-nav strip; plus an opt-in ?ccmVP=1 viewport readout.
 
    v1.96: hide the "Claude Fable 5 is currently unavailable." service banner
    above the composer (rule 27) — pure CSS off the announcement-link href.
@@ -364,6 +368,48 @@ window.__ccmStyleEl = GM_addStyle(`
   .epitaxy-composer-width [class*="py-[4px]"] [role="button"] {
     min-height: 0 !important;
     font-size: 13px !important;
+  }
+
+  /* 16b (v1.128). Keep the dock's last line out of the system-UI strip.
+
+     claude.ai ships  <meta name="viewport" ... viewport-fit=cover>  and then
+     uses env(safe-area-inset-*) NOWHERE - measured 2026-07-26 by walking
+     document.styleSheets on the live app: 0 rules across all 26 stylesheets
+     mention safe-area-inset. viewport-fit=cover is a promise to the browser
+     that the page will lay itself out around the system bars; the app makes
+     the promise and then never keeps it. On any browser that honours cover by
+     extending the viewport under the Android gesture-navigation bar (Firefox
+     Android, edge-to-edge), the bottom strip of the app's viewport-pinned
+     layout lands behind that bar. The dock's last row - permission mode on the
+     left, model + effort on the right - is exactly what lives there, so it
+     gets cut in half (Ben 2026-07-26: "you can see the model name is cut off
+     on the bottom", with a screenshot showing the row severed at its baseline
+     ~24 CSS px above the screen edge, i.e. at the top of the gesture-nav
+     inset).
+
+     Pay the inset the app never pays: pad the dock's bottom by exactly the
+     browser-reported inset, which pushes the last row up out of the strip and
+     shrinks the (flex-1, min-h-0) transcript by the same amount. Deliberately
+     NOT a height clamp on html/body: measured in-harness, forcing
+     html{height:715px} + body{min-height:715px} leaves div#root at 915px and
+     the dock bottom unmoved at 906 - the app's height pin does not descend
+     from the document root, so a root clamp is a no-op on the thing that is
+     actually clipped.
+
+     Self-neutralising by construction: env(safe-area-inset-bottom) is 0 unless
+     the browser both supports the inset AND has applied viewport-fit=cover, so
+     on every desktop, every harness, and every browser that does not extend
+     under the nav bar this rule computes to padding-bottom:0 and changes
+     nothing. The 0px fallback covers browsers with no env() support at all.
+
+     Scoped with :has(> .epitaxy-prompt) because .epitaxy-composer-width is on
+     THREE nodes in-session (enumerated live 2026-07-26): an empty:hidden
+     placeholder, a pointer-events-none absolute inset-0 overlay spanning the
+     whole transcript (t41-b830), and the real dock (t830-b906) that holds the
+     composer. A bare class selector would also pad the overlay's content box
+     and shorten whatever it paints. */
+  .epitaxy-composer-width:has(> .epitaxy-prompt) {
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
   }
 
   /* 17. The Send/Stop button is an "uncontained" control — its fill is
@@ -945,6 +991,129 @@ window.__ccmFlags = (function () {
     attributes: true,
     attributeFilter: ['content']
   });
+})();
+
+/* ────────────────────────────────────────────────────────────────────────
+   v1.128 viewport readout - OPT-IN, OFF BY DEFAULT: claude.ai/code?ccmVP=1
+
+   Why this exists and why it is not the deleted kbDiag panel: kbDiag was
+   deleted in v1.122 because an in-page gauge cannot see a soft-keyboard FLASH
+   (a brief VK show never resizes the viewport in Firefox Android - measured,
+   twice). That verdict is specific to transient keyboard state. The bottom-row
+   clipping is the opposite kind of bug: a PERSISTENT layout state, visible in a
+   still screenshot, made of quantities the page can read exactly (layout vs
+   visual viewport, the four viewport units, the safe-area insets). For that,
+   an in-page readout is the right instrument and the only one available -
+   Firefox Android has no devtools, redroid ships no matching system-bar insets,
+   and the numbers cannot be recovered from a screenshot.
+
+   One tap, one screenshot, and the remaining ambiguity is settled:
+     - safe.bottom > 0            -> the browser extended the viewport under the
+                                     gesture-nav bar; rule 16b is paying for it
+                                     and dock.padBottom should equal it.
+     - inner.h > vv.h             -> layout viewport taller than visual (dynamic
+                                     toolbar / pan), a different mechanism.
+     - de.scrollH > de.clientH    -> the document itself is scrollable, which
+                                     this 100dvh-pinned app never intends.
+     - lvh > dvh > svh            -> the browser's dynamic-toolbar spread.
+
+   ?ccmVP=0 turns it back off. Persisted in localStorage so the phone doesn't
+   need the query string again. */
+(function () {
+  var KEY = 'ccmVP';
+  var on = false;
+  try {
+    var v = new URLSearchParams(location.search).get(KEY);
+    if (v === '1') { localStorage.setItem(KEY, '1'); on = true; }
+    else if (v === '0') { localStorage.removeItem(KEY); on = false; }
+    else { on = localStorage.getItem(KEY) === '1'; }
+  } catch (e) { /* localStorage can throw */ }
+  if (!on) return;
+
+  function unit(expr) {
+    var t = document.createElement('div');
+    t.setAttribute('style', 'position:fixed;left:-9999px;top:0;width:1px;height:' + expr);
+    document.body.appendChild(t);
+    var h = getComputedStyle(t).height;
+    t.remove();
+    return h;
+  }
+  /* Same node rule 16b targets - .epitaxy-composer-width is on three nodes
+     in-session (hidden placeholder, transcript overlay, real dock), so match
+     the one that owns the composer or the panel reports the wrong box. */
+  function dockEl() {
+    var p = document.querySelector('.epitaxy-prompt');
+    if (p && p.parentElement &&
+        p.parentElement.classList.contains('epitaxy-composer-width')) return p.parentElement;
+    return null;
+  }
+  function statusRow() {
+    var labels = ['Accept edits', 'Plan mode', 'Auto mode', 'Ask every time'];
+    var all = document.querySelectorAll('span, div, button');
+    for (var i = 0; i < all.length; i++) {
+      var t = (all[i].textContent || '').trim();
+      for (var j = 0; j < labels.length; j++) if (t === labels[j]) return all[i];
+    }
+    return null;
+  }
+  function lines() {
+    var vv = window.visualViewport;
+    var de = document.documentElement;
+    var dock = dockEl();
+    var row = statusRow();
+    var out = [];
+    out.push('inner  ' + window.innerWidth + ' x ' + window.innerHeight);
+    out.push('vv     ' + (vv ? Math.round(vv.width) + ' x ' + Math.round(vv.height) +
+      ' @top' + Math.round(vv.offsetTop) + ' s' + (Math.round(vv.scale * 100) / 100) : 'n/a'));
+    out.push('de     client ' + de.clientHeight + ' scroll ' + de.scrollHeight +
+      ' top ' + Math.round(de.scrollTop) + ' | winY ' + Math.round(window.scrollY || 0));
+    out.push('body   scroll ' + document.body.scrollHeight);
+    out.push('units  vh ' + unit('100vh') + ' svh ' + unit('100svh') +
+      ' lvh ' + unit('100lvh') + ' dvh ' + unit('100dvh'));
+    out.push('safe   t ' + unit('env(safe-area-inset-top,0px)') +
+      ' b ' + unit('env(safe-area-inset-bottom,0px)') +
+      ' l ' + unit('env(safe-area-inset-left,0px)') +
+      ' r ' + unit('env(safe-area-inset-right,0px)'));
+    out.push('screen ' + screen.width + ' x ' + screen.height + ' dpr ' + window.devicePixelRatio);
+    out.push('dock   top ' + (dock ? Math.round(dock.getBoundingClientRect().top) : 'n/a') +
+      ' bottom ' + (dock ? Math.round(dock.getBoundingClientRect().bottom) : 'n/a') +
+      ' pad-b ' + (dock ? getComputedStyle(dock).paddingBottom : 'n/a'));
+    out.push('row    ' + (row ? JSON.stringify(row.textContent.trim()) + ' bottom ' +
+      Math.round(row.getBoundingClientRect().bottom) : 'not found'));
+    out.push('iw     ' + window.__ccmIW);
+    var m = document.querySelector('meta[name="viewport"]');
+    out.push('meta   ' + (m ? m.getAttribute('content') : 'none'));
+    return out.join('\n');
+  }
+  var panel = null;
+  function paint() {
+    if (!document.body) return;
+    if (!panel || !panel.isConnected) {
+      panel = document.createElement('pre');
+      panel.id = 'ccm-vp-panel';
+      panel.setAttribute('style', [
+        'position:fixed', 'left:0', 'right:0', 'top:0', 'z-index:2147483647',
+        'margin:0', 'padding:8px', 'background:rgba(0,0,0,0.92)', 'color:#0f0',
+        'font:11px/1.35 monospace', 'white-space:pre-wrap', 'word-break:break-all',
+        'border-bottom:1px solid #0f0', 'max-height:60vh', 'overflow:auto',
+      ].join(';'));
+      /* Tap to hide for this pageview only - ?ccmVP=0 is the real off switch. */
+      panel.addEventListener('click', function () { panel.style.display = 'none'; });
+      document.documentElement.appendChild(panel);
+    }
+    try { panel.textContent = lines(); } catch (e) { panel.textContent = 'ccmVP error: ' + e; }
+  }
+  function arm() {
+    paint();
+    setInterval(paint, 1000);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', paint);
+      window.visualViewport.addEventListener('scroll', paint);
+    }
+    window.addEventListener('resize', paint);
+  }
+  if (document.body) arm();
+  else document.addEventListener('DOMContentLoaded', arm);
 })();
 
 /* ────────────────────────────────────────────────────────────────────────
