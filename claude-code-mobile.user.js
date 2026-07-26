@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.128.0
+// @version      1.129.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,9 +17,15 @@
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
 
-   v1.128: rule 16b pays the bottom safe-area inset the app never pays, so the
-   dock's last row (permission mode / model / effort) stops being clipped by the
-   Android gesture-nav strip; plus an opt-in ?ccmVP=1 viewport readout.
+   v1.129: the dock's last row is clipped by a stuck sub-perceptual PINCH ZOOM,
+   not by a safe-area inset - measured over RDP on Ben's phone (visualViewport
+   scale 1.0180, vv 446x839 inside a 454x854 layout viewport, all four
+   env(safe-area-inset-*) 0px). The ccmZoom module snaps that residual zoom back
+   to 1; v1.128's rule 16b, which was written against the safe-area theory and
+   measures as a literal no-op on the device, is reverted.
+
+   v1.128: opt-in ?ccmVP=1 viewport readout (kept), and rule 16b (reverted in
+   v1.129 - see above).
 
    v1.96: hide the "Claude Fable 5 is currently unavailable." service banner
    above the composer (rule 27) — pure CSS off the announcement-link href.
@@ -368,48 +374,6 @@ window.__ccmStyleEl = GM_addStyle(`
   .epitaxy-composer-width [class*="py-[4px]"] [role="button"] {
     min-height: 0 !important;
     font-size: 13px !important;
-  }
-
-  /* 16b (v1.128). Keep the dock's last line out of the system-UI strip.
-
-     claude.ai ships  <meta name="viewport" ... viewport-fit=cover>  and then
-     uses env(safe-area-inset-*) NOWHERE - measured 2026-07-26 by walking
-     document.styleSheets on the live app: 0 rules across all 26 stylesheets
-     mention safe-area-inset. viewport-fit=cover is a promise to the browser
-     that the page will lay itself out around the system bars; the app makes
-     the promise and then never keeps it. On any browser that honours cover by
-     extending the viewport under the Android gesture-navigation bar (Firefox
-     Android, edge-to-edge), the bottom strip of the app's viewport-pinned
-     layout lands behind that bar. The dock's last row - permission mode on the
-     left, model + effort on the right - is exactly what lives there, so it
-     gets cut in half (Ben 2026-07-26: "you can see the model name is cut off
-     on the bottom", with a screenshot showing the row severed at its baseline
-     ~24 CSS px above the screen edge, i.e. at the top of the gesture-nav
-     inset).
-
-     Pay the inset the app never pays: pad the dock's bottom by exactly the
-     browser-reported inset, which pushes the last row up out of the strip and
-     shrinks the (flex-1, min-h-0) transcript by the same amount. Deliberately
-     NOT a height clamp on html/body: measured in-harness, forcing
-     html{height:715px} + body{min-height:715px} leaves div#root at 915px and
-     the dock bottom unmoved at 906 - the app's height pin does not descend
-     from the document root, so a root clamp is a no-op on the thing that is
-     actually clipped.
-
-     Self-neutralising by construction: env(safe-area-inset-bottom) is 0 unless
-     the browser both supports the inset AND has applied viewport-fit=cover, so
-     on every desktop, every harness, and every browser that does not extend
-     under the nav bar this rule computes to padding-bottom:0 and changes
-     nothing. The 0px fallback covers browsers with no env() support at all.
-
-     Scoped with :has(> .epitaxy-prompt) because .epitaxy-composer-width is on
-     THREE nodes in-session (enumerated live 2026-07-26): an empty:hidden
-     placeholder, a pointer-events-none absolute inset-0 overlay spanning the
-     whole transcript (t41-b830), and the real dock (t830-b906) that holds the
-     composer. A bare class selector would also pad the overlay's content box
-     and shorten whatever it paints. */
-  .epitaxy-composer-width:has(> .epitaxy-prompt) {
-    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
   }
 
   /* 17. The Send/Stop button is an "uncontained" control — its fill is
@@ -795,6 +759,7 @@ window.__ccmFlags = (function () {
     noKbOnSwitch: f('ccmNoKbOnSwitch', true), // gates keyboard-down-on-session-switch
     steer: f('ccmSteer', true),         // gates the re-wired Stop->steer action button
     iw: f('ccmIW', true),               // gates the interactive-widget viewport-meta patch (v1.94)
+    zoom: f('ccmZoom', true),           // gates the residual-pinch-zoom reset (v1.129)
   };
 })();
 
@@ -994,6 +959,97 @@ window.__ccmFlags = (function () {
 })();
 
 /* ────────────────────────────────────────────────────────────────────────
+   v1.129 ccmZoom - snap a stuck sub-perceptual pinch zoom back to 1.
+
+   Measured live over Firefox RDP on Ben's phone, 2026-07-26, in the reported
+   bad state ("weird scrolling ... the model name is cut off on the bottom"):
+
+     innerHeight 854   visualViewport 446x839 @offsetTop 0   scale 1.0180
+     env(safe-area-inset-{top,bottom,left,right}) = 0px, all four
+     dock  t716 b845    status row ("Accept edits" / model / effort) t824 b844
+
+   The layout viewport is 854 CSS px tall and correct; the VISUAL viewport is
+   only 839 because the page is zoomed to 1.018x, so the bottom 15 CSS px of a
+   correctly-laid-out page are simply off-screen - which is precisely the dock's
+   last row, cut at its baseline. The same zoom is what makes the page pannable
+   ("weird scrolling"): at scale 1 the document is exactly viewport-height and
+   has nothing to pan. A 1.8% zoom is far too small to read as "I zoomed in";
+   it is what an accidental pinch or a double-tap-to-fit leaves behind, and it
+   survives SPA navigation because nothing reloads.
+
+   The reset: pulse maximum-scale=1 into the viewport meta, then remove it. On
+   the live device this took scale 1.0180 -> 1 and vv 446x839 -> 454x854, and
+   the scale STAYED at 1 across every later sample once maximum-scale was gone,
+   so pinch zoom is handed straight back. Re-parsing the identical meta without
+   maximum-scale does NOT reset it (tried first - scale held at 1.0180), and a
+   late initial-scale change is ignored by Gecko outright.
+
+   Only the accidental band (1.001, 1.15) is touched, after the visual viewport
+   has been quiet for SETTLE ms, and at most once per COOLDOWN. A deliberate
+   zoom to read a code block is well above 1.15 and is left alone.
+
+   Kill switch from the phone: claude.ai/code?ccmZoom=0, ?ccmZoom=1 to re-enable
+   (persists via localStorage), same shape as ?ccmIW. */
+(function () {
+  var qs = null;
+  try {
+    var v = new URLSearchParams(location.search).get('ccmZoom');
+    if (v === '0') { localStorage.setItem('ccmZoom', '0'); qs = false; }
+    else if (v === '1') { localStorage.removeItem('ccmZoom'); qs = true; }
+  } catch (e) { /* localStorage can throw */ }
+  var on = qs !== null ? qs : window.__ccmFlags.zoom;
+  if (!on) { window.__ccmZoom = false; return; }
+  window.__ccmZoom = true;
+
+  var MIN = 1.001;      // below this there is no zoom to undo
+  var MAX = 1.15;       // above this assume the zoom is deliberate
+  var SETTLE = 700;     // wait for the pinch gesture to finish
+  var COOLDOWN = 1500;  // never fight the user in a tight loop
+  var RESTORE = 250;    // how long maximum-scale=1 stays pinned
+
+  var timer = 0, last = 0;
+
+  /* Deliberately setTimeout and not requestAnimationFrame: rAF does not run in
+     a backgrounded tab, and a restore that never runs would leave pinch zoom
+     disabled. The check itself only ever fires off a timer, so by the time we
+     get here timers are running. */
+  function reset() {
+    var m = document.querySelector('meta[name="viewport"]');
+    if (!m || /maximum-scale/.test(m.content)) return;
+    m.content = m.content + ',maximum-scale=1';
+    window.__ccmZoomResets = (window.__ccmZoomResets || 0) + 1;
+    setTimeout(function () {
+      var m2 = document.querySelector('meta[name="viewport"]');
+      if (m2 && m2.content.indexOf(',maximum-scale=1') !== -1) {
+        m2.content = m2.content.replace(/,maximum-scale=1/, '');
+      }
+    }, RESTORE);
+  }
+
+  function check() {
+    var vv = window.visualViewport;
+    if (!vv) return;
+    var now = Date.now();
+    if (now - last < COOLDOWN) return;
+    if (vv.scale > MIN && vv.scale < MAX) { last = now; reset(); }
+  }
+
+  function schedule() {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(function () { timer = 0; check(); }, SETTLE);
+  }
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', schedule);
+    window.visualViewport.addEventListener('scroll', schedule);
+  }
+  window.addEventListener('resize', schedule);
+  /* A zoom already stuck when the script loads has no gesture left to observe,
+     so take one look on the way in as well. */
+  schedule();
+})();
+
+/* ────────────────────────────────────────────────────────────────────────
    v1.128 viewport readout - OPT-IN, OFF BY DEFAULT: claude.ai/code?ccmVP=1
 
    Why this exists and why it is not the deleted kbDiag panel: kbDiag was
@@ -1080,7 +1136,13 @@ window.__ccmFlags = (function () {
       ' pad-b ' + (dock ? getComputedStyle(dock).paddingBottom : 'n/a'));
     out.push('row    ' + (row ? JSON.stringify(row.textContent.trim()) + ' bottom ' +
       Math.round(row.getBoundingClientRect().bottom) : 'not found'));
-    out.push('iw     ' + window.__ccmIW);
+    /* The v1.129 bug read out here: how far the dock's last row sits BELOW the
+       bottom edge of the visual viewport. Positive = clipped. */
+    out.push('clip   ' + (row && vv
+      ? Math.round(row.getBoundingClientRect().bottom - (vv.offsetTop + vv.height)) + 'px'
+      : 'n/a'));
+    out.push('iw     ' + window.__ccmIW + '  zoom ' + window.__ccmZoom +
+      ' resets ' + (window.__ccmZoomResets || 0));
     var m = document.querySelector('meta[name="viewport"]');
     out.push('meta   ' + (m ? m.getAttribute('content') : 'none'));
     return out.join('\n');
