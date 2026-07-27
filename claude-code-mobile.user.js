@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.130.0
+// @version      1.131.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -16,6 +16,11 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.131: that button carries the aggregate diffstat instead of a git-branch
+   glyph - a green +added and a red -removed, drawn with the app's own
+   .text-git-added / .text-git-removed classes so both themes stay in step. The
+   counts refresh as the diff grows, which the v1.130 sync() skipped.
 
    v1.130: the per-repo branch / PR rows above the composer are collapsed behind
    a "Branch details" button in the title bar, immediately left of the Session
@@ -71,7 +76,7 @@ window.__ccmStyleEl = GM_addStyle(`
   [aria-label="Open sidebar"], [aria-label="Close side chat"],
   [aria-label="Share"], [aria-label="Views"], [aria-label="Filter"],
   [aria-label="Dismiss"], [aria-label^="Usage"], [aria-label^="More options"],
-  [aria-label="Branch details"] {
+  [aria-label^="Branch details"] {
     min-width: 44px !important;
     min-height: 44px !important;
     display: inline-flex !important;
@@ -218,6 +223,45 @@ window.__ccmStyleEl = GM_addStyle(`
     font-size: 13px !important;
   }
 
+  /* 8b. v1.131 - the button shows the aggregate diffstat rather than a branch
+     glyph. The two counts wear the app's OWN .text-git-added / .text-git-removed
+     classes, so they track the theme without this script naming a colour; read
+     off the device they resolve to rgb(50,215,75) and rgb(255,44,86) in dark,
+     and to something else entirely in light, which is the point.
+
+     Sizing is explicit because the surrounding rules fight it: rule 1 pushes
+     button text to 16px, and rule 2's 44px is a min-WIDTH floor, not a width -
+     the chip grows past it on its own. The title bar has room: its lead group
+     is min-w-0 and ends ~60px short of the cluster on a 454px viewport, so a
+     wider button truncates the session title rather than overflowing. */
+  [data-ccm-branch-btn] {
+    gap: 3px !important;
+    padding: 0 8px !important;
+    font-variant-numeric: tabular-nums !important;
+  }
+  /* Sizing has to be fought for twice. The button inherits the kebab's classes,
+     which carry Tailwind's aspect-square + w-control (a 36px square), and rule
+     12b pins every button in this cluster to width:36px / flex:0 0 36px. Both
+     are (0,1,0)/(0,2,1) and both would clip the chip to 36px with the digits
+     spilling out (measured: width 36, scrollWidth 46). 12b now exempts this
+     button by attribute; this (0,2,0) selector outranks the Tailwind classes
+     whatever the sheet order turns out to be. */
+  [data-top-left="true"] [data-ccm-branch-btn] {
+    width: auto !important;
+    flex: 0 0 auto !important;
+    aspect-ratio: auto !important;
+  }
+  [data-ccm-branch-btn] > span {
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    line-height: 1 !important;
+  }
+  /* Open reads as pressed, on the same surface token the revealed card uses. */
+  html[data-ccm-branch="open"] [data-ccm-branch-btn] {
+    background: var(--cds-bg-100, rgba(128, 128, 128, 0.14)) !important;
+    border-radius: 10px !important;
+  }
+
   /* 9. The send-slot (the app's own .self-end class) wraps the send button with
      p-p7 padding — ~10px on each side. The top/bottom padding inflates the box
      past the button height, and the right ~10px is dead space between the icon
@@ -312,7 +356,7 @@ window.__ccmStyleEl = GM_addStyle(`
     padding-left: 4px !important;
     gap: 2px !important;
   }
-  [data-top-left="true"] .ml-auto button {
+  [data-top-left="true"] .ml-auto button:not([data-ccm-branch-btn]) {
     min-width: 0 !important;
     width: 36px !important;
     flex: 0 0 36px !important;
@@ -942,9 +986,10 @@ window.__ccmFlags = (function () {
 
    Rule 8 (CSS) hides the .epitaxy-branch-row stack until
    html[data-ccm-branch="open"]. This module owns that attribute and the button
-   that flips it: one 36px toggle inserted immediately BEFORE the "Session
-   actions" kebab, so it lands to the left of the three-dots menu, and present
-   only while some row actually reports a diff.
+   that flips it: one toggle inserted immediately BEFORE the "Session actions"
+   kebab, so it lands to the left of the three-dots menu, and present only while
+   some row actually reports a diff. v1.131 gives it the aggregate diffstat as
+   its face (see paint()), so it is text-width, not the v1.130 36px square.
 
    Ground truth for the row shape (Firefox RDP on Ben's phone, 2026-07-27 - the
    headless dump harness never renders these rows at all, so this could only be
@@ -995,18 +1040,30 @@ window.__ccmFlags = (function () {
   var ROW = '.epitaxy-branch-row';
   var BTN = '[data-ccm-branch-btn]';
 
-  /* Total changed lines across every repo row. 0 (or no rows) => no button. The
-     spans hold "+228" / "−23"; strip everything that is not a digit. */
-  function diffTotal() {
-    var n = 0;
-    Array.prototype.forEach.call(
-      document.querySelectorAll(ROW + ' .text-git-added, ' + ROW + ' .text-git-removed'),
-      function (el) {
+  /* Added / removed lines summed across every repo row. total 0 (or no rows)
+     => no button. The spans hold "+228" / "−23"; strip everything that is not a
+     digit, because the minus is U+2212 and the plus is a real "+". */
+  function diffStat() {
+    var add = 0, del = 0;
+    function sum(sel) {
+      var n = 0;
+      Array.prototype.forEach.call(document.querySelectorAll(ROW + ' ' + sel), function (el) {
         var d = (el.textContent || '').replace(/[^0-9]/g, '');
         if (d) n += parseInt(d, 10);
-      }
-    );
-    return n;
+      });
+      return n;
+    }
+    add = sum('.text-git-added');
+    del = sum('.text-git-removed');
+    return { add: add, del: del, total: add + del };
+  }
+
+  /* Four columns is the budget: past that the chip starts eating the session
+     title. 1234 -> "1.2k", 12345 -> "12k". */
+  function fmt(n) {
+    if (n < 1000) return String(n);
+    if (n < 10000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return Math.round(n / 1000) + 'k';
   }
 
   function isOpen() {
@@ -1021,32 +1078,34 @@ window.__ccmFlags = (function () {
     if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
-  /* Inline SVG, not one of the app's Anthropicons ligature glyphs: those render
-     from a private-use codepoint in a font this script does not own, and picking
-     a wrong codepoint yields a tofu box rather than a visible failure. */
-  function icon() {
-    var ns = 'http://www.w3.org/2000/svg';
-    var svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('width', '18');
-    svg.setAttribute('height', '18');
-    svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '2');
-    svg.setAttribute('stroke-linecap', 'round');
-    svg.setAttribute('stroke-linejoin', 'round');
-    svg.setAttribute('aria-hidden', 'true');
-    // git-branch: two rails joined by a merge curve, three nodes.
-    [['circle', { cx: 6, cy: 5, r: 2.2 }],
-     ['circle', { cx: 6, cy: 19, r: 2.2 }],
-     ['circle', { cx: 18, cy: 9, r: 2.2 }],
-     ['path', { d: 'M6 7.2v9.6' }],
-     ['path', { d: 'M18 11.2c0 3.2-2.6 5.8-5.8 5.8H8.2' }]].forEach(function (p) {
-      var el = document.createElementNS(ns, p[0]);
-      Object.keys(p[1]).forEach(function (k) { el.setAttribute(k, p[1][k]); });
-      svg.appendChild(el);
-    });
-    return svg;
+  /* v1.131 - the chip replaces the v1.130 inline git-branch SVG. Ben, on seeing
+     the icon: "it could use a little color, maybe red and green - and +?". The
+     counts are the affordance anyway, and they carry the app's own git classes
+     so the greens and reds match the diffstat inside the rows the button opens.
+     A zero side is dropped rather than rendered as "-0"; total > 0 is the gate
+     for showing the button at all, so at least one span always survives. The
+     minus is U+2212, the same glyph the app's own rows use. */
+  function paint(btn, st) {
+    var want = (st.add ? '+' + fmt(st.add) : '') + ' ' + (st.del ? '−' + fmt(st.del) : '');
+    if (btn.__ccmDiff === want) return; // avoid churning the DOM every rAF
+    btn.__ccmDiff = want;
+    btn.textContent = '';
+    if (st.add) {
+      var a = document.createElement('span');
+      a.className = 'text-git-added';
+      a.textContent = '+' + fmt(st.add);
+      btn.appendChild(a);
+    }
+    if (st.del) {
+      var d = document.createElement('span');
+      d.className = 'text-git-removed';
+      d.textContent = '−' + fmt(st.del);
+      btn.appendChild(d);
+    }
+    // The visible text is a diffstat, so spell the action out for a screen
+    // reader rather than letting it read "+228 -23" as the button's name.
+    btn.setAttribute('aria-label',
+      'Branch details, ' + st.add + ' additions, ' + st.del + ' deletions');
   }
 
   function makeButton(kebab) {
@@ -1058,7 +1117,6 @@ window.__ccmFlags = (function () {
     // Inherit the kebab's own classes so it matches the native icon buttons in
     // both themes (fill, radius, hover) without this script restating any of it.
     b.className = kebab.className;
-    b.appendChild(icon());
     b.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -1070,7 +1128,8 @@ window.__ccmFlags = (function () {
   function sync() {
     var kebab = document.querySelector(KEBAB);
     var existing = document.querySelector(BTN);
-    var want = !!kebab && diffTotal() > 0;
+    var st = diffStat();
+    var want = !!kebab && st.total > 0;
 
     if (!want) {
       if (existing) existing.remove();
@@ -1084,9 +1143,12 @@ window.__ccmFlags = (function () {
       if (existing.parentElement !== kebab.parentElement || existing.nextElementSibling !== kebab) {
         kebab.parentElement.insertBefore(existing, kebab);
       }
+      paint(existing, st); // the diff grows while the session works - v1.130 never refreshed it
       return;
     }
-    kebab.parentElement.insertBefore(makeButton(kebab), kebab);
+    var b = makeButton(kebab);
+    paint(b, st);
+    kebab.parentElement.insertBefore(b, kebab);
   }
 
   var pend = false;
