@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.131.0
+// @version      1.132.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -816,6 +816,58 @@ window.__ccmStyleEl = GM_addStyle(`
     opacity: 1 !important;
     pointer-events: auto !important;
   }
+
+  /* 29. Ghost prompt-suggestion unclip. The app renders its suggested next
+     prompt as an absolutely-positioned span overlaying the composer input row
+     (device-captured 2026-07-27: span[aria-hidden] sibling right after
+     .epitaxy-prompt-input, classes "pointer-events-none absolute inset-y-0
+     left-0 right-[var(--h8)] truncate pl-p7 pt-[13px]"), aligned so its pl-p7
+     matches the tiptap's own left padding IN STOCK LAYOUT. Our relocated "+"
+     proxy (rule 18: 30px + 6px margin = 36px) shifts the real input right, so
+     the ghost text renders underneath the "+" button. Shift the overlay by the
+     same 36px so it aligns with the actual input text again, and widen its
+     right inset to clear the ccm-sugg-accept chip (30px + gap) injected next
+     to Send by the ccmSugg module. Gated on :has(#ccm-add-proxy) so if the
+     proxy module is ever off, the stock alignment stands. */
+  .epitaxy-prompt div:has(> #ccm-add-proxy) > .epitaxy-prompt-input + span[aria-hidden="true"] {
+    left: 36px !important;
+    right: calc(var(--h8, 40px) + 34px) !important;
+  }
+
+  /* 29a. Make the ghost unmistakable vs typed text (Ben 2026-07-27: "it needs
+     to be easily distinguishable from text I've actually typed"). Italic is
+     the distinguisher - no real typed prompt renders italic - plus a relative
+     opacity dim on top of the app's own muted color token, which keeps it
+     theme-safe (no hardcoded color that would break light mode). Un-gated on
+     :has: this applies wherever the ghost renders, proxy or not. */
+  .epitaxy-prompt .epitaxy-prompt-input + span[aria-hidden="true"] {
+    font-style: italic !important;
+    opacity: 0.75;
+  }
+
+  /* 29b. The tap-to-accept chip (ccmSugg module). Sized/rounded to match the
+     30px "+" and Send discs (rules 13/18); explicit width+height+min-0 beats
+     the global 44px control inflation the same way rule 18 does. Color rides
+     currentColor so it follows the composer's text color on either theme,
+     dimmed to read as an affordance on the dim ghost text it accepts. */
+  #ccm-sugg-accept {
+    align-self: center !important;
+    flex: 0 0 auto !important;
+    width: 30px !important;
+    height: 30px !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin-right: 2px !important;
+    padding: 0 !important;
+    border: none !important;
+    border-radius: 9999px !important;
+    background: transparent !important;
+    color: inherit !important;
+    opacity: 0.6;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
 }
 `);
 /* v1.46 bisect: ccmCss=0 removes the entire stylesheet (keeps companion JS),
@@ -843,6 +895,7 @@ window.__ccmFlags = (function () {
     iw: f('ccmIW', true),               // gates the interactive-widget viewport-meta patch (v1.94)
     zoom: f('ccmZoom', true),           // gates the residual-pinch-zoom reset (v1.129)
     branch: f('ccmBranch', true),       // gates collapsing the branch rows behind a button (v1.130)
+    sugg: f('ccmSugg', true),           // gates the tap-to-accept prompt-suggestion chip (v1.132)
   };
 })();
 
@@ -2259,6 +2312,114 @@ window.__ccmFlags = (function () {
   }
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
+  });
+  sync();
+})();
+
+/* v1.132 ccmSugg - phone-friendly accept for the composer's ghost prompt
+   suggestion (Ben 2026-07-27: "prompt suggestions are partially hidden" +
+   "I don't have tab on my phone keyboard").
+
+   Ground truth (device RDP capture + bundle read, both 2026-07-27):
+   - The app renders a server-supplied `promptSuggestion` (a field on the
+     session object) as a dim span overlaying the input row, visible only when
+     the editor is empty and no competing UI state is active. CSS rule 29
+     un-clips it from under our relocated "+".
+   - Desktop accept is Tab OR ArrowRight, handled by an onKeyDownCapture in
+     the editor wrapper: if the key has no Shift/Ctrl/Meta modifier, the
+     editor is empty, and a suggestion is present, it preventDefault()s and
+     writes the suggestion into the tiptap doc via setContent().focus("end").
+     Neither key exists on a phone soft keyboard.
+   - A synthetic (untrusted) KeyboardEvent {key:"Tab"} dispatched at the
+     .tiptap node DOES trigger that handler - React routes real DOM events
+     through its root listeners without checking isTrusted. MEASURED live on
+     Ben's phone 2026-07-27: defaultPrevented=true, editor content went "" ->
+     the full suggestion text. That measurement is the load-bearing fact here;
+     if the app ever swaps the mechanism, re-probe before re-shipping (grep
+     memory/reference_userscript_publish.md for "promptSuggestion").
+
+   So: mount a 30px tappable chip (NW "insert" arrow, the Google-suggestion
+   idiom) as a flex child right before the Send slot whenever the ghost span
+   exists; tapping it releases our own VK suppression on the composer (so the
+   app's focus("end") raises the keyboard for immediate edit/send) and then
+   dispatches the synthetic Tab. The app's own handler does the insertion, so
+   editor state stays consistent and the accept can never desync React (same
+   reasoning as the "+" proxy above: never reparent or write into React-owned
+   DOM, forward intent to the app's own code path). The chip is a foreign node
+   like the proxy: if React reconciliation drops it, sync() re-creates it.
+
+   Edge behavior: during the ghost's exit fade the span lingers ~500ms with
+   the editor already non-empty - a second tap then dispatches a Tab the app
+   ignores (its handler requires an empty editor), so double-taps are no-ops.
+   Kill switch from the phone: claude.ai/code?ccmSugg=0 (chip gone, ghost
+   stays un-clipped via rule 29), ?ccmSugg=1 to re-enable - same shape as
+   ?ccmZoom. */
+(function () {
+  try {
+    var v = new URLSearchParams(location.search).get('ccmSugg');
+    if (v === '0') { localStorage.setItem('ccmSugg', '0'); window.__ccmFlags.sugg = false; }
+    else if (v === '1') { localStorage.removeItem('ccmSugg'); window.__ccmFlags.sugg = true; }
+  } catch (e) { /* URLSearchParams/localStorage can throw in odd sandboxes */ }
+  if (!window.__ccmFlags.sugg) return;
+  var CHIP_ID = 'ccm-sugg-accept';
+  function ghostSpan() {
+    var g = document.querySelector('.epitaxy-prompt-input + span[aria-hidden="true"]');
+    return (g && g.textContent.trim().length > 1) ? g : null;
+  }
+  function accept() {
+    var tt = document.querySelector('.epitaxy-prompt .tiptap');
+    if (!tt) return;
+    /* Release our keyboard suppression BEFORE the app's focus("end") runs,
+       using the same restore path as the kb module (natural inputmode back,
+       stamp "live" so the observer leaves it alone) - otherwise the accept
+       lands with inputmode="none" and the user can't edit what they just
+       inserted without a second tap. */
+    if (tt.getAttribute('data-ccm-kb') === 'off') {
+      var natural = tt.getAttribute('data-ccm-im') || '';
+      if (natural) tt.setAttribute('inputmode', natural);
+      else tt.removeAttribute('inputmode');
+      tt.setAttribute('data-ccm-kb', 'live');
+    }
+    tt.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab', code: 'Tab', keyCode: 9, which: 9,
+      bubbles: true, cancelable: true,
+    }));
+  }
+  function sync() {
+    try {
+      var g = ghostSpan();
+      var chip = document.getElementById(CHIP_ID);
+      if (!g) { if (chip) chip.remove(); return; }
+      var row = g.parentElement; // div.relative.flex.w-full (the input row)
+      if (!row) return;
+      if (!chip) {
+        chip = document.createElement('button');
+        chip.id = CHIP_ID;
+        chip.type = 'button';
+        chip.setAttribute('aria-label', 'Use suggested prompt');
+        chip.innerHTML = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12 L4.5 4.5 M4.5 10 V4.5 H10"/></svg>';
+        chip.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          accept();
+        });
+      }
+      var send = null;
+      for (var c = row.lastElementChild; c; c = c.previousElementSibling) {
+        if (c.querySelector && c.querySelector('[aria-label="Send"], [aria-label="Stop"]')) { send = c; break; }
+      }
+      if (send) { if (chip.nextElementSibling !== send || chip.parentElement !== row) row.insertBefore(chip, send); }
+      else if (chip.parentElement !== row) row.appendChild(chip);
+    } catch (e) { /* never let a reconciliation race break the composer */ }
+  }
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; sync(); });
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true, characterData: true,
   });
   sync();
 })();
