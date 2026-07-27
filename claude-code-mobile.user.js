@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.129.0
+// @version      1.130.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -16,6 +16,11 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.130: the per-repo branch / PR rows above the composer are collapsed behind
+   a "Branch details" button in the title bar, immediately left of the Session
+   actions kebab, shown only while a row reports a non-zero diff (rule 8 +
+   ccmBranch module). Two repos cost ~92px of permanent screen height before this.
 
    v1.129: the dock's last row is clipped by a stuck sub-perceptual PINCH ZOOM,
    not by a safe-area inset - measured over RDP on Ben's phone (visualViewport
@@ -65,7 +70,8 @@ window.__ccmStyleEl = GM_addStyle(`
   [aria-label="Dismiss question"],
   [aria-label="Open sidebar"], [aria-label="Close side chat"],
   [aria-label="Share"], [aria-label="Views"], [aria-label="Filter"],
-  [aria-label="Dismiss"], [aria-label^="Usage"], [aria-label^="More options"] {
+  [aria-label="Dismiss"], [aria-label^="Usage"], [aria-label^="More options"],
+  [aria-label="Branch details"] {
     min-width: 44px !important;
     min-height: 44px !important;
     display: inline-flex !important;
@@ -171,12 +177,39 @@ window.__ccmStyleEl = GM_addStyle(`
      tighter than our old 8px — so the rule is both dead (class gone) and no
      longer wanted. Don't re-anchor it: fighting the native 6px would loosen. */
 
-  /* 8. The branch / PR / diff bar above the composer eats vertical space partly
-     because rules 1 & 4 inflate its controls to 16px / 40px. It's glanceable,
-     not a primary tap target — let it stay compact. */
-  .epitaxy-branch-row {
-    padding-top: 4px !important;
-    padding-bottom: 4px !important;
+  /* 8. The branch / PR / diff rows above the composer (one per repo attached to
+     the session) are pure glance information, and with two repos they claim ~92px
+     of a 854px screen permanently (measured on Ben's phone over RDP: each
+     .epitaxy-branch-row is 44px, its <nav> 46px). Ben 2026-07-27: "Branch info at
+     the bottom is taking up too much space, let's put a button to the left of the
+     three dots menu that brings up the details, should only appear when there is a
+     diff."
+
+     So the rows are hidden until the title-bar button (ccmBranch companion below)
+     opens them, at which point they render in place above the composer as a raised
+     card. Hide by NOT applying any display of our own when open — a
+     html:not([data-ccm-branch="open"]) guard leaves the app's native display value
+     untouched in the open state, where forcing display:flex would guess at it.
+
+     Two hide rules, because hiding the row alone is not enough: the row's <nav>
+     sits in a flex-column parent with a gap, so a zero-height nav still spends one
+     gap. The :has() rule collapses the nav itself, but ONLY when every child is a
+     branch row — that same <nav> is the generic composer-aux slot and may hold
+     rows we must never hide. */
+  html:not([data-ccm-branch="open"]) .epitaxy-branch-row {
+    display: none !important;
+  }
+  html:not([data-ccm-branch="open"]) nav:has(> .epitaxy-branch-row):not(:has(> :not(.epitaxy-branch-row))) {
+    display: none !important;
+  }
+  /* Open state: keep the controls compact (rules 1 & 4 would inflate them to
+     16px / 40px) and give the stack a card surface so it reads as a popover the
+     button raised, not as UI that just reappeared. */
+  html[data-ccm-branch="open"] .epitaxy-branch-row {
+    padding: 4px 8px !important;
+    border-radius: 10px !important;
+    background: var(--cds-bg-100, rgba(128, 128, 128, 0.14)) !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28) !important;
   }
   .epitaxy-branch-row button,
   .epitaxy-branch-row [role="button"],
@@ -308,8 +341,13 @@ window.__ccmStyleEl = GM_addStyle(`
      with it the ENTIRE top menu — background processes, artifacts, Share — that
      the menu is the only gateway to (Ben 2026-07-18: "the ccm top menu with
      background processes, artifacts, etc seems to have disappeared"). The ^=
-     prefix spares both label variants. */
-  [data-top-left="true"] .ml-auto > span > :not([aria-label^="Session actions"]) {
+     prefix spares both label variants.
+
+     The [data-ccm-branch-btn] exemption spares the branch-details toggle this
+     script injects into the same cluster (v1.130) - it is a child of that span
+     like every app action, so without the exemption the rule would hide the
+     button the moment it was inserted. */
+  [data-top-left="true"] .ml-auto > span > :not([aria-label^="Session actions"]):not([data-ccm-branch-btn]) {
     display: none !important;
   }
 
@@ -760,6 +798,7 @@ window.__ccmFlags = (function () {
     steer: f('ccmSteer', true),         // gates the re-wired Stop->steer action button
     iw: f('ccmIW', true),               // gates the interactive-widget viewport-meta patch (v1.94)
     zoom: f('ccmZoom', true),           // gates the residual-pinch-zoom reset (v1.129)
+    branch: f('ccmBranch', true),       // gates collapsing the branch rows behind a button (v1.130)
   };
 })();
 
@@ -896,6 +935,212 @@ window.__ccmFlags = (function () {
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
   });
+})();
+
+/* ────────────────────────────────────────────────────────────────────────
+   v1.130 ccmBranch - collapse the branch / PR rows behind a title-bar button.
+
+   Rule 8 (CSS) hides the .epitaxy-branch-row stack until
+   html[data-ccm-branch="open"]. This module owns that attribute and the button
+   that flips it: one 36px toggle inserted immediately BEFORE the "Session
+   actions" kebab, so it lands to the left of the three-dots menu, and present
+   only while some row actually reports a diff.
+
+   Ground truth for the row shape (Firefox RDP on Ben's phone, 2026-07-27 - the
+   headless dump harness never renders these rows at all, so this could only be
+   measured on the device):
+
+     <nav class="… flex flex-col … empty:hidden">           <- 46px
+       <div data-no-pr class="epitaxy-branch-row …">        <- 44px, one per repo
+         <div class="epitaxy-branch-leading">  repo button, branch button
+         <div class="epitaxy-branch-trailing"> diffstat button, Create PR button
+           <span class="sr-only">228 additions, 23 deletions</span>
+           <span class="text-git-added">+228</span><span class="text-git-removed">−23</span>
+
+   "Only appear when there is a diff" is read off those two spans and requires a
+   NON-ZERO total, not merely their presence - a session sitting on a clean
+   branch still renders the row, and a button that says "details" for +0 −0 is
+   the same clutter one layer in. The minus is U+2212, not a hyphen; parse digits
+   only and never compare the glyph.
+
+   The rows are revealed IN PLACE rather than re-parented into a floating panel:
+   they carry live React handlers (the repo/branch pickers open Base UI menus,
+   Create PR posts), and moving them out of the app's tree would break event
+   delegation. In place they also cannot be mispositioned - their ancestor
+   .epitaxy-composer-width is [contain:layout], which is a containing block for
+   position:fixed, so a "floating" card anchored to the title bar would in fact
+   anchor to the composer.
+
+   Dismissal is the button itself plus an outside tap. The outside-tap listener
+   is registered on window/capture and this IIFE sits ABOVE the v1.110 gesture
+   firewall for the documented reason: the firewall stopImmediatePropagation()s
+   transcript-origin pointer events on that same node, and listener order is file
+   order at document-start, so a listener placed after it never sees a tap on the
+   transcript. It only reads - it never stops or prevents anything.
+
+   Kill switch from the phone: claude.ai/code?ccmBranch=0 (rows return to their
+   permanent spot above the composer), ?ccmBranch=1 to re-enable. */
+(function () {
+  var qs = null;
+  try {
+    var v = new URLSearchParams(location.search).get('ccmBranch');
+    if (v === '0') { localStorage.setItem('ccmBranch', '0'); qs = false; }
+    else if (v === '1') { localStorage.removeItem('ccmBranch'); qs = true; }
+  } catch (e) { /* localStorage can throw */ }
+  var on = qs !== null ? qs : window.__ccmFlags.branch;
+  window.__ccmBranch = on;
+  if (!on) return;
+
+  var KEBAB = '[aria-label^="Session actions"]';
+  var ROW = '.epitaxy-branch-row';
+  var BTN = '[data-ccm-branch-btn]';
+
+  /* Total changed lines across every repo row. 0 (or no rows) => no button. The
+     spans hold "+228" / "−23"; strip everything that is not a digit. */
+  function diffTotal() {
+    var n = 0;
+    Array.prototype.forEach.call(
+      document.querySelectorAll(ROW + ' .text-git-added, ' + ROW + ' .text-git-removed'),
+      function (el) {
+        var d = (el.textContent || '').replace(/[^0-9]/g, '');
+        if (d) n += parseInt(d, 10);
+      }
+    );
+    return n;
+  }
+
+  function isOpen() {
+    return document.documentElement.getAttribute('data-ccm-branch') === 'open';
+  }
+
+  function setOpen(open) {
+    var de = document.documentElement;
+    if (open) de.setAttribute('data-ccm-branch', 'open');
+    else de.removeAttribute('data-ccm-branch');
+    var btn = document.querySelector(BTN);
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  /* Inline SVG, not one of the app's Anthropicons ligature glyphs: those render
+     from a private-use codepoint in a font this script does not own, and picking
+     a wrong codepoint yields a tofu box rather than a visible failure. */
+  function icon() {
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '18');
+    svg.setAttribute('height', '18');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    // git-branch: two rails joined by a merge curve, three nodes.
+    [['circle', { cx: 6, cy: 5, r: 2.2 }],
+     ['circle', { cx: 6, cy: 19, r: 2.2 }],
+     ['circle', { cx: 18, cy: 9, r: 2.2 }],
+     ['path', { d: 'M6 7.2v9.6' }],
+     ['path', { d: 'M18 11.2c0 3.2-2.6 5.8-5.8 5.8H8.2' }]].forEach(function (p) {
+      var el = document.createElementNS(ns, p[0]);
+      Object.keys(p[1]).forEach(function (k) { el.setAttribute(k, p[1][k]); });
+      svg.appendChild(el);
+    });
+    return svg;
+  }
+
+  function makeButton(kebab) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('data-ccm-branch-btn', '1');
+    b.setAttribute('aria-label', 'Branch details');
+    b.setAttribute('aria-expanded', isOpen() ? 'true' : 'false');
+    // Inherit the kebab's own classes so it matches the native icon buttons in
+    // both themes (fill, radius, hover) without this script restating any of it.
+    b.className = kebab.className;
+    b.appendChild(icon());
+    b.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(!isOpen());
+    });
+    return b;
+  }
+
+  function sync() {
+    var kebab = document.querySelector(KEBAB);
+    var existing = document.querySelector(BTN);
+    var want = !!kebab && diffTotal() > 0;
+
+    if (!want) {
+      if (existing) existing.remove();
+      if (isOpen()) setOpen(false); // never strand the attribute with nothing to show
+      return;
+    }
+    if (existing) {
+      // The app re-renders the cluster on activity (the kebab's aria-label gains
+      // ", new activity"), which can drop our button out of it or leave it after
+      // the kebab. Re-seat it rather than assuming placement survived.
+      if (existing.parentElement !== kebab.parentElement || existing.nextElementSibling !== kebab) {
+        kebab.parentElement.insertBefore(existing, kebab);
+      }
+      return;
+    }
+    kebab.parentElement.insertBefore(makeButton(kebab), kebab);
+  }
+
+  var pend = false;
+  function schedule() {
+    if (pend) return;
+    pend = true;
+    requestAnimationFrame(function () {
+      pend = false;
+      try { sync(); } catch (e) { /* never break the title bar */ }
+    });
+  }
+
+  /* Outside tap closes. Registered HERE, synchronously at document-start,
+     NOT inside start(): the v1.110 firewall binds its own window-capture
+     listener during script eval, and a listener bound later (e.g. from
+     DOMContentLoaded) is second on the same node and never sees a transcript
+     tap that the firewall stops. Read-only - it never stops or prevents.
+     A popover opened FROM a row (the repo / branch pickers are Base UI menus
+     portaled outside the row) is exempt, so choosing a branch does not yank
+     the panel out from under the menu. */
+  var POPOVER = '[role="menu"], [role="dialog"], [role="listbox"]';
+  window.addEventListener('pointerdown', function (e) {
+    if (!isOpen()) return;
+    var t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest(ROW) || t.closest(BTN) || t.closest(POPOVER)) return;
+    try { if (document.querySelector(POPOVER)) return; } catch (err) { /* ignore */ }
+    setOpen(false);
+  }, true);
+
+  function start() {
+    sync();
+    new MutationObserver(schedule).observe(document.documentElement, {
+      childList: true, subtree: true, characterData: true,
+    });
+    // A backgrounded tab runs no rAF, so a MutationObserver-only sync can leave
+    // the button stale on return; a slow interval settles it either way.
+    setInterval(function () { try { sync(); } catch (e) { /* ignore */ } }, 4000);
+
+    // Switching sessions (swipe nav or a drawer tap) should not carry an open
+    // panel into a session whose diff is different or absent.
+    var path = location.pathname;
+    setInterval(function () {
+      if (location.pathname === path) return;
+      path = location.pathname;
+      setOpen(false);
+    }, 500);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
 })();
 
 /* ────────────────────────────────────────────────────────────────────────
