@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.132.0
+// @version      1.133.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -834,15 +834,19 @@ window.__ccmStyleEl = GM_addStyle(`
     right: calc(var(--h8, 40px) + 34px) !important;
   }
 
-  /* 29a. Make the ghost unmistakable vs typed text (Ben 2026-07-27: "it needs
-     to be easily distinguishable from text I've actually typed"). Italic is
-     the distinguisher - no real typed prompt renders italic - plus a relative
-     opacity dim on top of the app's own muted color token, which keeps it
-     theme-safe (no hardcoded color that would break light mode). Un-gated on
-     :has: this applies wherever the ghost renders, proxy or not. */
+  /* 29a. Make the ghost unmistakable vs typed text yet still readable (Ben
+     2026-07-27: "easily distinguishable from text I've actually typed", then
+     "a touch lighter, it's a bit hard to read"). Italic is the distinguisher -
+     no real typed prompt renders italic. Brightness: the app's own token is
+     ~25%-alpha text and the v1.132 0.75 opacity dim on top of it proved too
+     faint on the phone, so instead derive 40%-alpha from the INHERITED text
+     color (color-mix beats the token utility class; theme-safe in light and
+     dark because it follows whatever the theme's real text color is). If
+     color-mix is unsupported the declaration drops and the stock token
+     stands. Un-gated on :has: applies wherever the ghost renders. */
   .epitaxy-prompt .epitaxy-prompt-input + span[aria-hidden="true"] {
     font-style: italic !important;
-    opacity: 0.75;
+    color: color-mix(in srgb, currentcolor 40%, transparent) !important;
   }
 
   /* 29b. The tap-to-accept chip (ccmSugg module). Sized/rounded to match the
