@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.135.0
+// @version      1.136.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -3301,6 +3301,29 @@ window.__ccmVer = (function () {
    - Touch/pen only; desktop mouse behavior is untouched.
    - Scroll is native and unaffected (no preventDefault, and scrolling does not
      depend on the app's JS seeing pointerdown).
+
+   v1.136 - pointerdown ONLY. The claim above, that scrolling does not depend
+   on the app's JS, was true of NATIVE scrolling and wrong about the app's own
+   scroll state, which is what caused Ben's transcript to shake when he dragged
+   up during streaming. The transcript ([data-testid="epitaxy-virtual-transcript"])
+   registers three touchstart handlers whose whole job is to record the
+   gesture's baseline scrollTop and raise "the user is dragging"; its touchend
+   then compares scrollTop against that baseline to decide whether to stop
+   sticking to the bottom. Eating touchstart at window capture meant the
+   baseline was never taken, the drag never registered, and the stick-to-bottom
+   kept re-pinning the scroller every frame - which reads as a shake, and only
+   while a turn is streaming, because that is the only time there is anything
+   to stick to. Measured on the real app via scripts/ccm_autoscroll_probe.py,
+   one variable, gesture confirmed landing on the transcript:
+
+     firewall off              transcript touchstart 1,1,1   press recognizer 1
+     firewall pointerdown+touchstart   0,0,0                                  0
+     firewall pointerdown only         1,1,1                                  0
+
+   The app's long-press recognizer arms on POINTERDOWN at document capture, so
+   suppressing pointerdown alone starves it exactly as before while giving the
+   transcript its drag detection back. Regression test:
+   tests/test_ccm_gesture_firewall_scroll.py.
    Kill switch: localStorage ccmNativeLongPress = '0'. */
 (function () {
   var flagOn = true;
@@ -3349,7 +3372,9 @@ window.__ccmVer = (function () {
     e.stopImmediatePropagation();            // the app never sees this touch
   }
   window.addEventListener('pointerdown', firewall, true);
-  window.addEventListener('touchstart', firewall, true);
+  // NOT touchstart - see the v1.136 note above. The transcript's own autoscroll
+  // takes its drag baseline there, and starving it welds the scroller to the
+  // bottom mid-gesture.
 })();
 
 /* v1.110 layer 2 - transcript selection guard. Companion to the composer
