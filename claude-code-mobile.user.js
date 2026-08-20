@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.133.0
+// @version      1.134.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -871,6 +871,58 @@ window.__ccmStyleEl = GM_addStyle(`
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
+  }
+
+  /* 30. Session-row "More options" kebab: one tap, not two. (Ben, 2026-08-20:
+     "It takes two taps to open the session context menu... first tap makes the
+     three dots appear, second actually brings up the menu.")
+
+     Device-shaped DOM, captured 2026-08-20 via ccm-domdump on the open drawer:
+
+       div[data-row].group.relative
+         a[data-row-main-button]  (full-width row link; title in .dframe-fade-label)
+         div.absolute.right-...   opacity-0 pointer-events-none
+                                  group-hover:opacity-100 group-hover:pointer-events-auto
+                                  group-focus-within:opacity-100 ...
+           button[data-row-action][aria-label^="More options for "][aria-haspopup="menu"]
+
+     Measured computed style on all 4 Recents rows: wrapper opacity 0,
+     pointer-events none (the button itself reads opacity 1 / pe none, since the
+     gate lives on the wrapper). Same hover-only pattern rule 28 fixes for the
+     per-message toolbar: a touch device fires neither :hover nor :focus-within,
+     so tap #1 only lands the emulated hover on the .group row (which is why it
+     doesn't navigate either - the wrapper is pointer-events:none and the
+     underlying <a> ends before that inset), and tap #2 is the first one that can
+     actually hit the button.
+
+     Anchor on [data-row-action] (a stable data hook the app puts on the button)
+     rather than the Tailwind hover-state utility classes.
+
+     Two follow-on bits the pinned state needs:
+     - The title's .dframe-fade-label only applies its right-edge fade mask under
+       group-hover, so pin that mask on too or the title runs under the now
+       always-visible dots. Same 44px/20px stops the app uses itself.
+     - Rule 25's .ccm-idle-age sits at the main button's right edge
+       (margin-left:auto), i.e. exactly under the kebab. Reserve the control
+       width so the age label lands to its left instead of behind it. */
+  div:has(> [data-row-action]) {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+  [data-row].group:has([data-row-action]) .dframe-fade-label {
+    mask-image: linear-gradient(
+      to right,
+      black calc(100% - 44px),
+      transparent calc(100% - 20px)
+    ) !important;
+  }
+  [data-row-main-button] .ccm-idle-age {
+    /* 52px = the kebab's RENDERED width (44px) + a 8px gap. Deliberately NOT
+       calc(var(--df-row-ctl) + ...): that token is 24px in the drawer, and the
+       button only measures 44px because rule 10 inflates every control to a
+       44px tap target - trusting the token reserved 28px and left the label
+       still 18px under the dots (measured 2026-08-20). */
+    margin-right: 52px !important;
   }
 }
 `);
