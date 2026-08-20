@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.134.0
+// @version      1.135.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @connect      raw.githubusercontent.com
 // @homepageURL  https://github.com/GetsEclectic/claude-code-mobile-userscript
 // @downloadURL  https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
 // @updateURL    https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js
@@ -952,7 +953,23 @@ window.__ccmFlags = (function () {
     zoom: f('ccmZoom', true),           // gates the residual-pinch-zoom reset (v1.129)
     branch: f('ccmBranch', true),       // gates collapsing the branch rows behind a button (v1.130)
     sugg: f('ccmSugg', true),           // gates the tap-to-accept prompt-suggestion chip (v1.132)
+    upd: f('ccmUpd', true),             // gates the "newer version published" reload chip (v1.135)
   };
+})();
+
+/* The running script's own version, for anything that reports it. Read from
+   GM_info (always supplied by Violentmonkey, no @grant needed) so it cannot
+   drift from the metadata block the way the hand-maintained telemetry constant
+   did - that one still said 1.82.0 at v1.134. The literal is only the fallback
+   for a context with no GM_info at all (the dump harness injects this file as
+   plain JS), and is the one place to bump by hand. */
+window.__ccmVer = (function () {
+  try {
+    if (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) {
+      return String(GM_info.script.version);
+    }
+  } catch (e) {}
+  return '1.135.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -1707,7 +1724,9 @@ window.__ccmFlags = (function () {
   // end-to-end encrypted to it; only the holder of the matching private key can
   // read them. Required — without it we cannot encrypt and we never send plaintext.
   if (!PUBKEY_B64) return;
-  var VER = '1.82.0';
+  // v1.135: was a hand-maintained literal and had been stale since v1.82, so
+  // every beacon mislabelled which build produced it. Reads the real one now.
+  var VER = window.__ccmVer;
 
   // Stable-per-device client id so multiple beacons correlate into one timeline.
   var cid = 'x';
@@ -4312,4 +4331,161 @@ window.__ccmFlags = (function () {
   // change) without a mutation the observer flags; a cheap interval covers both.
   setInterval(apply, 500);
   apply();
+})();
+
+/* v1.135: "update installed, but the page is still running the old script."
+
+   Ben, 2026-08-20: "when I hit update it did the script update but the menu
+   still said I was on 1.133 until I reloaded." Violentmonkey was not lying -
+   an already-loaded document keeps running the code that was injected at
+   document-start, so after VM stores a new version the page (and VM's own
+   popup, which reports the INJECTED script) stays on the old one until a real
+   reload. SPA route changes do not re-inject, so browsing around never picks it
+   up either. There is no way to hot-swap a running userscript; the only fix is
+   to NOTICE the staleness and offer the reload.
+
+   So: poll the published @updateURL, compare its @version with the version
+   actually running, and when it is newer show one tappable chip that reloads.
+   Deliberate choices:
+
+   - Range: bytes=0-2047 - the file is ~215 KB and the metadata block is in the
+     first few hundred bytes. A GitHub raw 206 keeps this at ~2 KB per check; if
+     the CDN ignores the header we still only pay it on the throttled schedule.
+   - 20-minute floor, persisted in localStorage, so a burst of reloads costs one
+     request, and only while the tab is visible.
+   - The chip reports what is actually true ("v1.135 published, running v1.134")
+     rather than promising the reload will apply it: VM downloads on its own
+     schedule, so if it has not fetched the new version yet the reload re-injects
+     the old one and the chip simply comes back. In Ben's flow (he taps "check
+     for updates" himself) VM already has it and one tap is the whole fix.
+   - Dismissal is remembered per published version, so saying no once does not
+     re-nag until the NEXT release.
+
+   Kill switch: localStorage ccmUpd=0. Test seam: window.__ccmUpd exposes the
+   comparison and the render so the dump harness can drive both without network
+   (there are no GM_* APIs there - the module no-ops on that check alone). */
+(function () {
+  var MQ = '(max-width: 900px)';
+  var SRC = 'https://raw.githubusercontent.com/GetsEclectic/claude-code-mobile-userscript/main/claude-code-mobile.user.js';
+  var LAST = 'ccmUpdLast';     // epoch ms of the last network check
+  var SEEN = 'ccmUpdSeen';     // published version the user dismissed
+  var FLOOR_MS = 20 * 60 * 1000;
+  var FIRST_DELAY_MS = 12000;  // let the app finish booting before we spend a request
+
+  // Numeric compare of dotted versions. Returns >0 when a is newer than b.
+  // Missing components read as 0 so "1.135" and "1.135.0" compare equal.
+  function cmpVer(a, b) {
+    var x = String(a || '').split('.');
+    var y = String(b || '').split('.');
+    var n = Math.max(x.length, y.length);
+    for (var i = 0; i < n; i++) {
+      var xi = parseInt(x[i], 10); if (isNaN(xi)) xi = 0;
+      var yi = parseInt(y[i], 10); if (isNaN(yi)) yi = 0;
+      if (xi !== yi) return xi - yi;
+    }
+    return 0;
+  }
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  var chipEl = null;
+  function chip(published, running) {
+    if (chipEl && chipEl.isConnected) chipEl.remove();
+    var el = document.createElement('div');
+    el.id = 'ccm-update-chip';
+    el.setAttribute('role', 'status');
+    el.style.cssText = 'position:fixed;top:52px;left:50%;transform:translateX(-50%);'
+      + 'display:flex;align-items:center;gap:10px;max-width:92vw;'
+      + 'background:rgba(0,0,0,0.88);color:#fff;font-size:13px;line-height:1.2;'
+      + 'padding:8px 8px 8px 13px;border-radius:999px;z-index:2147483000;'
+      + 'pointer-events:auto;box-shadow:0 2px 10px rgba(0,0,0,0.35);';
+
+    var txt = document.createElement('button');
+    txt.type = 'button';
+    txt.textContent = 'v' + published + ' ready · tap to reload';
+    txt.setAttribute('aria-label',
+      'Userscript v' + published + ' published, this page is running v' + running + '. Reload to apply.');
+    txt.style.cssText = 'all:unset;cursor:pointer;white-space:nowrap;overflow:hidden;'
+      + 'text-overflow:ellipsis;color:inherit;font:inherit;';
+    // Goes through api.reload rather than calling location.reload directly:
+    // location.reload is non-writable, so a test cannot stub it (the assignment
+    // silently no-ops in sloppy mode and the click really reloads the page,
+    // destroying the probe's own output - measured 2026-08-20).
+    txt.addEventListener('click', function () {
+      api.reload();
+    });
+
+    var x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = '×';
+    x.setAttribute('aria-label', 'Dismiss update notice');
+    x.style.cssText = 'all:unset;cursor:pointer;color:inherit;font:inherit;'
+      + 'width:26px;height:26px;border-radius:999px;text-align:center;'
+      + 'line-height:26px;opacity:0.7;flex:0 0 26px;';
+    x.addEventListener('click', function () {
+      lsSet(SEEN, published);
+      el.remove();
+    });
+
+    el.appendChild(txt);
+    el.appendChild(x);
+    (document.body || document.documentElement).appendChild(el);
+    chipEl = el;
+    return el;
+  }
+
+  // Decide what a fetched version means. Split out from the transport so the
+  // harness can exercise every branch without a network round trip.
+  function apply(published, running) {
+    if (!published) return 'unparsed';
+    if (cmpVer(published, running) <= 0) return 'current';
+    if (lsGet(SEEN) === published) return 'dismissed';
+    chip(published, running);
+    return 'shown';
+  }
+
+  function parseVersion(text) {
+    var m = /@version\s+([0-9]+(?:\.[0-9]+)*)/.exec(String(text || ''));
+    return m ? m[1] : null;
+  }
+
+  var api = {
+    cmp: cmpVer,
+    apply: apply,
+    parse: parseVersion,
+    chip: chip,
+    reload: function () { try { location.reload(); } catch (e) {} },
+  };
+  window.__ccmUpd = api;
+
+  if (!window.__ccmFlags || !window.__ccmFlags.upd) return;
+  if (typeof GM_xmlhttpRequest !== 'function') return;   // grant missing / harness -> no-op
+  try { if (!window.matchMedia(MQ).matches) return; } catch (e) { return; }
+
+  function check() {
+    if (document.visibilityState === 'hidden') return;
+    var now = Date.now();
+    var last = parseInt(lsGet(LAST), 10);
+    if (!isNaN(last) && now - last < FLOOR_MS) return;
+    lsSet(LAST, String(now));
+    try {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: SRC,
+        headers: { 'Range': 'bytes=0-2047' },
+        timeout: 8000,
+        onload: function (r) {
+          try { apply(parseVersion(r && r.responseText), window.__ccmVer); } catch (e) {}
+        },
+        onerror: function () {}, ontimeout: function () {},
+      });
+    } catch (e) {}
+  }
+
+  setTimeout(check, FIRST_DELAY_MS);
+  setInterval(check, FLOOR_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') check();
+  });
 })();
