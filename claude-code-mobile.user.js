@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.137.0
+// @version      1.138.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -926,46 +926,72 @@ window.__ccmStyleEl = GM_addStyle(`
     margin-right: 52px !important;
   }
 
-  /* 31. Absolute per-message timestamps (v1.137, Ben 2026-08-22: "put timestamps
-     on the messages... nice to see when things happened in the session history").
+  /* 31. Per-message timestamps (v1.137, reworked v1.138 - Ben 2026-08-22: "put
+     timestamps on the messages... nice to see when things happened in the session
+     history", then on v1.137: "it changed the existing 'x minutes ago' to a
+     specific time, which I didn't necessarily want, and it didn't add timestamps
+     anywhere else").
 
-     The app ALREADY renders one per message - measured 2026-08-22 via ccm-domdump
-     on a real session: every transcript-row with data-perf-row human|assistant
-     carries a <time data-cds="RelativeTime" datetime="2026-08-19T00:03:19.856Z">
-     inside its [data-cds="MessageActions"] toolbar (marker rows carry none). But
-     it renders RELATIVE text - "4 days ago" - which answers "how long ago" and
-     not "when", which is the question Ben actually asked. So we keep the app's
-     element and re-label it.
+     Two things v1.137 got wrong, both fixed here:
 
-     The re-label is ATTRIBUTE-ONLY, deliberately. Writing textContent into a
-     React-owned node risks a reconciliation throw (the same reason the composer
-     "+" proxy forwards clicks instead of reparenting). The ccmMsgTime companion
-     below only sets data-ccm-ts on the <time>; this rule zeroes the element's own
-     font-size so the app's text nodes collapse to nothing, and paints ours from
-     content: attr(data-ccm-ts) on ::after. React never sees a child change, and
-     if it re-mounts the node the observer just re-stamps the attribute.
+     (a) It REPLACED the app's relative label instead of adding to it. Ben wants
+         both halves - "4d ago" answers how long ago, "Aug 19, 12:04 AM" answers
+         when - so the label the companion stamps is now "4d ago · Aug 19,
+         12:04 AM" and the app's own text is no longer the thing being rewritten.
+
+     (b) It painted into the app's own <time>, which lives inside
+         [data-cds="MessageActions"][data-reveal="fade"] - the app's hover-reveal
+         toolbar. Measured stylesheet (ccm-domdump, 2026-08-22):
+             .cds-root [data-cds="MessageActions"][data-reveal] { opacity: 0 }
+             @media (hover: hover) { …:hover … { opacity: 1 } }
+             @media (pointer: coarse) { …[data-reveal] { opacity: 1 } }
+         so whether the stamp is visible at all depends on the app's own reveal
+         state. Hanging a timestamp off that is what left Ben seeing one label
+         change and nothing else appear. v1.138 stops depending on it: the label
+         is painted on the message's OWN row (the [role="article"] wrapper every
+         transcript-row carries), as a plain block line under the turn, visible
+         unconditionally.
+
+     Still ATTRIBUTE-ONLY, for the same reason as before: writing textContent into
+     a React-owned node risks a reconciliation throw (the same reason the composer
+     "+" proxy forwards clicks instead of reparenting). The companion sets
+     data-ccm-ts on the article; this rule paints it from content: attr(...) on
+     ::after. React never sees a child change, and a re-mount just needs the
+     attribute re-stamped.
 
      11px, not the stock 10px: rule 1's whole premise is that this UI ships text
-     too small for a phone, and the meta row is 20px tall so 11px still fits.
-     tabular-nums keeps the column from jittering as the minute rolls. */
-  time[data-cds="RelativeTime"][data-ccm-ts] {
-    font-size: 0 !important;
-    gap: 0 !important;
-    opacity: 1 !important;
+     too small for a phone. tabular-nums keeps the column from jittering as the
+     minute rolls. */
+  [role="article"][data-ccm-ts]::after {
+    content: attr(data-ccm-ts);
+    display: block;
+    padding-top: 2px;
+    font-size: 11px;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.55;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* The app's own relative label is now the first half of ours, so leaving it in
+     the toolbar puts the same information on screen twice. Hide it VISUALLY only
+     - clipped rather than display:none - so the <time> stays in the a11y tree and
+     React keeps owning an unmodified node. */
+  [role="article"][data-ccm-ts] time[data-cds="RelativeTime"] {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    clip-path: inset(50%) !important;
     white-space: nowrap !important;
   }
-  time[data-cds="RelativeTime"][data-ccm-ts]::after {
-    content: attr(data-ccm-ts);
-    font-size: 11px;
-    line-height: 1.2;
-    font-variant-numeric: tabular-nums;
-  }
-  /* Defensive: the toolbar carries data-reveal="fade", which is the app's own
-     hook for hover-revealed controls. It measured opacity:1 with no hover in the
-     Chromium rig (i.e. it is NOT gated the way rule 28's older toolbar was), but
-     a timestamp that only appears on hover would be useless on the phone, so pin
-     any toolbar that holds a stamped time. */
-  [data-cds="MessageActions"]:has(time[data-ccm-ts]) {
+  /* Independent of the timestamp: the same toolbar holds Copy / Pin / Read aloud,
+     and on a touch device the app already un-fades it (pointer: coarse above).
+     Pin it anyway so those stay tappable if that media query ever changes. */
+  [role="article"][data-ccm-ts] [data-cds="MessageActions"][data-reveal] {
     opacity: 1 !important;
   }
 }
@@ -997,7 +1023,7 @@ window.__ccmFlags = (function () {
     branch: f('ccmBranch', true),       // gates collapsing the branch rows behind a button (v1.130)
     sugg: f('ccmSugg', true),           // gates the tap-to-accept prompt-suggestion chip (v1.132)
     upd: f('ccmUpd', true),             // gates the "newer version published" reload chip (v1.135)
-    msgTime: f('ccmMsgTime', true),     // gates absolute per-message timestamps (v1.137)
+    msgTime: f('ccmMsgTime', true),     // gates per-message timestamps (v1.137, reworked v1.138)
   };
 })();
 
@@ -1013,22 +1039,27 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.137.0';
+  return '1.138.0';
 })();
 
-/* ccmMsgTime - relabel every per-message <time> with an ABSOLUTE clock time.
+/* ccmMsgTime - give every message row its own always-visible timestamp line.
 
-   See CSS rule 31 for the measured DOM and for why this only ever writes an
-   attribute. The division of labour: this module decides WHAT the label says and
-   stamps it into data-ccm-ts; the stylesheet decides how it is painted.
+   See CSS rule 31 for the measured DOM, for why v1.138 moved the label off the
+   app's hover-revealed toolbar and onto the message's [role="article"] row, and
+   for why this only ever writes an attribute. The division of labour: this module
+   decides WHAT the label says and stamps it into data-ccm-ts on the article; the
+   stylesheet decides how it is painted.
 
-   Format, tuned for a 412px phone reading back a long session:
-     - stamped today          -> "3:47 PM"
-     - stamped this year      -> "Aug 19, 3:47 PM"
-     - stamped another year   -> "Aug 19 2025, 3:47 PM"
+   Format, tuned for a 412px phone reading back a long session - relative half
+   first (Ben's pick, v1.138), absolute half after a middot:
+     - a moment ago           -> "just now · 3:47 PM"
+     - earlier today          -> "22m ago · 3:47 PM"  /  "6h ago · 9:12 AM"
+     - within the last month  -> "4d ago · Aug 19, 3:47 PM"
+     - older than that        -> "Aug 19 2025, 3:47 PM"   (no relative half: "247d
+                                 ago" is noise once the date itself is the answer)
    Time-of-day comes from toLocaleTimeString so a 24h locale gets 15:47; the
    date half is built by hand because toLocaleDateString's short forms vary in
-   width enough to reflow the toolbar.
+   width enough to reflow the line.
 
    Re-stamping: a 250ms trailing throttle, not a per-frame rAF like ccmSugg. The
    document-wide characterData observer fires on every token of a streaming
@@ -1075,18 +1106,58 @@ window.__ccmVer = (function () {
     return head + ', ' + t;
   }
 
+  /* The relative half. Short forms ("4d ago", not "4 days ago") because this
+     shares a 412px line with the absolute half. Returns null past MAX_AGO_DAYS,
+     where the date in the absolute half is already the better answer. */
+  var MAX_AGO_DAYS = 30;
+  function ago(d, now) {
+    if (!d || isNaN(d.getTime())) return null;
+    var s = Math.round((now.getTime() - d.getTime()) / 1000);
+    if (s < 0) return null;                       // clock skew / a future stamp
+    if (s < 60) return 'just now';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    var days = Math.floor(h / 24);
+    if (days > MAX_AGO_DAYS) return null;
+    return days + 'd ago';
+  }
+
+  /* What actually gets painted: relative · absolute, or just the absolute when
+     the relative half has stopped carrying information. */
+  function full(d, now) {
+    var abs = label(d, now);
+    if (!abs) return null;
+    var rel = ago(d, now);
+    return rel ? rel + ' · ' + abs : abs;
+  }
+
+  /* The <time> lives inside the app's hover-revealed MessageActions toolbar, so
+     the label is painted on the message row that CONTAINS it - [role="article"]
+     is the per-message wrapper every transcript-row carries (measured 2026-08-22:
+     div[data-testid="transcript-row"] > div[role="article"][aria-label="Message N"]).
+     Falling back to the row itself keeps the module working if that wrapper is
+     ever renamed; falling back to nothing would silently stop stamping. */
+  function host(el) {
+    return el.closest('[role="article"]') ||
+           el.closest('[data-testid="transcript-row"]');
+  }
+
   function stamp(el, now) {
     var iso = el.getAttribute('datetime');
     if (!iso) return;
-    var txt = label(new Date(iso), now);
+    var target = host(el);
+    if (!target) return;
+    var txt = full(new Date(iso), now);
     if (!txt) return;
     /* Cheap idempotence: re-stamp only when the source instant or the rendered
        label actually changed, so a re-mount is caught but a no-op sweep costs
        one attribute read. */
-    if (el.getAttribute('data-ccm-src') === iso &&
-        el.getAttribute('data-ccm-ts') === txt) return;
-    el.setAttribute('data-ccm-src', iso);
-    el.setAttribute('data-ccm-ts', txt);
+    if (target.getAttribute('data-ccm-src') === iso &&
+        target.getAttribute('data-ccm-ts') === txt) return;
+    target.setAttribute('data-ccm-src', iso);
+    target.setAttribute('data-ccm-ts', txt);
   }
 
   function sweep() {
@@ -1096,7 +1167,7 @@ window.__ccmVer = (function () {
       for (var i = 0; i < list.length; i++) stamp(list[i], now);
     } catch (e) { /* never let a reconciliation race break the transcript */ }
   }
-  window.__ccmMsgTime = { label: label, stamp: stamp, sweep: sweep };
+  window.__ccmMsgTime = { label: label, ago: ago, full: full, stamp: stamp, sweep: sweep };
 
   if (!window.__ccmFlags.msgTime) return;
 
