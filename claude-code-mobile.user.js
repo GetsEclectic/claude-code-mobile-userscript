@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.138.0
+// @version      1.139.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,12 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.139: the two remaining lead-group controls - the "Cloud" origin button in
+   the title bar's left gutter and the repo (folder) pill on the title's right -
+   move into the Session-actions kebab menu, the same place rule 12c already
+   sends Diff and Share (rule 12d + the relocation IIFE's lead half). Measured
+   in-session at 412px: the title's usable width went 258px -> 314px.
 
    v1.131: that button carries the aggregate diffstat instead of a git-branch
    glyph - a green +added and a red -removed, drawn with the app's own
@@ -393,6 +399,53 @@ window.__ccmStyleEl = GM_addStyle(`
      like every app action, so without the exemption the rule would hide the
      button the moment it was inserted. */
   [data-top-left="true"] .ml-auto > span > :not([aria-label^="Session actions"]):not([data-ccm-branch-btn]) {
+    display: none !important;
+  }
+
+  /* 12d. v1.139 - the LEFT half of the same reclaim (Ben 2026-08-22: "move the
+     cloud and the folder in the title bar into the menu"). Rules 12b/12c emptied
+     the right cluster down to the kebab; the lead group still spends bar width
+     on two app controls that flank the session title:
+
+       - the origin button, aria-label "Cloud", data-testid
+         epitaxy-origin-gutter. It sits in a position:absolute span pinned to
+         the lead group's left gutter, and that gutter is a real
+         padding-left:32px on the lead group - so hiding the span alone reclaims
+         nothing, the padding has to go with it.
+       - the repo pill, the button wrapping span[data-testid=
+         "epitaxy-origin-label"] (text "claude-cloud-bootstrap, k4y-apps"; it
+         renders icon-only - the folder - because the lead group carries
+         data-pills-compact). Its wrapper is the last .epitaxy-titlebar-fade
+         span in the lead group.
+
+     Measured in-session at a 412px viewport, WITH this script: bar x:41 w:370,
+     lead x:41 (padding-left 32px), cloud gutter x:41 w:32, title x:73, repo
+     pill x:307 w:22 with a 6px gap before it, kebab cluster x:359. The lead
+     group grows until it meets that cluster, so the title's ceiling was
+     359-41-32-6-22 = 258px; after this rule it is 359-41-4 = 314px (measured
+     after: title x:45, gutter and pill both display:none). +56px, ~22%.
+
+     Note rule 12's nested-fade selector matches NOTHING on this build: the four
+     .epitaxy-titlebar-fade spans are now SIBLINGS under a plain
+     span.gap-g5 wrapper, not nested. That is why the repo pill reappeared in
+     the bar at all. Both selectors below are anchored on the data-testids
+     instead, which survived the restructure.
+
+     The companion JS forwards both into the kebab menu. They differ from Diff /
+     Share in one way that dictates the guard below: each is a Base UI menu
+     TRIGGER (aria-haspopup="menu"), and Base UI anchors the popup to the
+     trigger's box. A display:none trigger has a zero rect, so the popup would
+     position against nothing. Hence the controls are hidden only while
+     html[data-ccm-origin="open"] is ABSENT; the module sets that attribute
+     immediately before firing the trigger and keeps it in step with the
+     trigger's own aria-expanded, so the control is laid out for exactly as long
+     as its menu is up. Failure degrades to "the controls are visible", i.e.
+     the pre-v1.139 bar, never to an orphaned popup. */
+  html:not([data-ccm-origin="open"]) [data-top-left="true"] > div:has([data-testid="epitaxy-origin-gutter"]) {
+    padding-left: 4px !important;
+  }
+  html:not([data-ccm-origin="open"]) [data-top-left="true"] span:has(> [data-testid="epitaxy-origin-gutter"]),
+  html:not([data-ccm-origin="open"]) [data-top-left="true"] .epitaxy-titlebar-fade:has([data-testid="epitaxy-origin-label"]) {
     display: none !important;
   }
 
@@ -1210,6 +1263,11 @@ window.__ccmVer = (function () {
   // suffix dynamically). Exact-match silently found nothing once the suffix
   // appeared, so nothing forwarded into the menu.
   var KEBAB = '[aria-label^="Session actions"]';
+  // v1.139 lead-group controls, hidden by rule 12d and forwarded like the
+  // cluster ones. Both are data-testid hooks, which survived the restructure
+  // that broke rule 12's class-shape selector.
+  var ORIGIN = '[data-top-left="true"] [data-testid="epitaxy-origin-gutter"]';
+  var REPO = '[data-top-left="true"] [data-testid="epitaxy-origin-label"]';
   var pendingMenu = false;
 
   // Latch when the kebab is tapped so we can claim the menu it spawns.
@@ -1217,6 +1275,58 @@ window.__ccmVer = (function () {
     var t = e.target && e.target.closest && e.target.closest(KEBAB);
     if (t) pendingMenu = true;
   }, true);
+
+  function repoPill() {
+    var lbl = document.querySelector(REPO);
+    return lbl ? lbl.closest('button') : null;
+  }
+
+  /* Rule 12d only hides the two lead controls while this attribute is absent.
+     Both are Base UI menu triggers whose popup anchors to the trigger's box, so
+     the trigger has to be laid out from the moment it is clicked until its menu
+     closes — otherwise the popup positions against a zero rect. aria-expanded
+     on the trigger itself is the app's own signal for that window, so mirror it
+     rather than guessing a duration. Re-derived from the live DOM on every
+     call, so a React remount of the title bar (new nodes, aria-expanded="false")
+     resolves to "closed" and the controls hide again. */
+  function syncOrigin() {
+    var cloud = document.querySelector(ORIGIN);
+    var pill = repoPill();
+    var open = (cloud && cloud.getAttribute('aria-expanded') === 'true') ||
+               (pill && pill.getAttribute('aria-expanded') === 'true');
+    if (open) document.documentElement.setAttribute('data-ccm-origin', 'open');
+    else document.documentElement.removeAttribute('data-ccm-origin');
+  }
+
+  function leadActions() {
+    var out = [];
+    var cloud = document.querySelector(ORIGIN);
+    if (cloud) {
+      out.push({
+        btn: cloud,
+        label: (cloud.getAttribute('aria-label') || 'Cloud').trim(),
+        // These are Anthropicons ligature spans, not <svg> — the cluster
+        // lookup below would find nothing. Clone the [data-cds="Icon"] node
+        // itself, never its wrapper: the repo pill's wrapper reveals the icon
+        // with a group-data-[pills-compact]/lead: variant that stops applying
+        // once the node is reparented into the menu.
+        icon: cloud.querySelector('svg, [data-cds="Icon"]'),
+        popup: true,
+      });
+    }
+    var pill = repoPill();
+    if (pill) {
+      out.push({
+        btn: pill,
+        // The pill renders icon-only in the bar, but its label span still
+        // carries the repo names — a far better menu item than a bare folder.
+        label: (document.querySelector(REPO).textContent || '').trim() || 'Repository',
+        icon: pill.querySelector('svg, [data-cds="Icon"]'),
+        popup: true,
+      });
+    }
+    return out;
+  }
 
   function realButtons(kebab) {
     // The cluster span is the kebab's parent; its other children are the hidden
@@ -1230,7 +1340,7 @@ window.__ccmVer = (function () {
       if (!btn) return;
       var label = (btn.getAttribute('aria-label') || btn.textContent || '').trim();
       if (!label) return;
-      out.push({ btn: btn, label: label, svg: btn.querySelector('svg') });
+      out.push({ btn: btn, label: label, icon: btn.querySelector('svg') });
     });
     return out;
   }
@@ -1274,8 +1384,7 @@ window.__ccmVer = (function () {
       });
     }
 
-    actions.forEach(function (a) {
-      if (alreadyInMenu(a.label)) return; // menu already exposes this action
+    function makeItem(a) {
       var it = document.createElement('div');
       it.setAttribute('role', 'menuitem');
       it.setAttribute('data-ccm-relocated', '1');
@@ -1285,18 +1394,49 @@ window.__ccmVer = (function () {
       span.className = 'flex-1 min-w-0 truncate';
       span.textContent = a.label;
       it.appendChild(span);
-      if (a.svg) {
-        var ic = a.svg.cloneNode(true);
+      if (a.icon) {
+        var ic = a.icon.cloneNode(true);
         ic.classList.add('shrink-0');
         it.appendChild(ic);
       }
       it.addEventListener('click', function (e) {
         e.preventDefault();
         e.stopPropagation();
+        if (a.popup) {
+          /* This one opens its OWN Base UI menu. Two things have to happen
+             first, in this order: close ours (a programmatic .click() fires no
+             pointerdown, so the kebab's outside-press dismiss never runs and
+             both menus would stay mounted), then set the rule 12d attribute so
+             the trigger is laid out before Base UI measures it. The 180ms beat
+             clears closeMenu()'s rAF re-click of the kebab, so that click can't
+             be mistaken for an outside press on the menu we are about to
+             open. */
+          closeMenu();
+          setTimeout(function () {
+            document.documentElement.setAttribute('data-ccm-origin', 'open');
+            a.btn.click();
+          }, 180);
+          return;
+        }
         a.btn.click(); // fire the real React onClick on the hidden button
         closeMenu();
       });
-      list.insertBefore(it, list.firstChild);
+      return it;
+    }
+
+    actions.forEach(function (a) {
+      if (alreadyInMenu(a.label)) return; // menu already exposes this action
+      list.insertBefore(makeItem(a), list.firstChild);
+    });
+
+    // Lead-group controls go in last, at the top, in reverse — so the menu
+    // reads Cloud, <repos>, then the relocated cluster actions. alreadyInMenu()
+    // is deliberately NOT applied here: these labels are repo names and the
+    // app's own "Cloud", either of which can share a >=4-letter word with a
+    // native item by coincidence ("Copy link", "Edit environment"), and unlike
+    // the count badges there is no native item that duplicates them.
+    leadActions().reverse().forEach(function (a) {
+      list.insertBefore(makeItem(a), list.firstChild);
     });
   }
 
@@ -1306,6 +1446,7 @@ window.__ccmVer = (function () {
     pend = true;
     requestAnimationFrame(function () {
       pend = false;
+      try { syncOrigin(); } catch (e) { /* never break the bar */ }
       if (!pendingMenu) return;
       var menu = document.querySelector('[role="menu"]');
       if (!menu) return;
@@ -1316,6 +1457,20 @@ window.__ccmVer = (function () {
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
   });
+  // Base UI flips aria-expanded on the trigger without touching childList up
+  // here, so the childList observer alone would never see the origin/repo menu
+  // close. Same rAF throttle, so a streaming transcript can't make this hot.
+  new MutationObserver(schedule).observe(document.documentElement, {
+    attributes: true, subtree: true, attributeFilter: ['aria-expanded'],
+  });
+  // Export for the headless logic test (see memory/reference_userscript_publish.md
+  // "Reliable way to inspect/verify a live-app menu"): the harness has no real
+  // kebab dropdown on every build, and this lets it drive inject()/syncOrigin()
+  // against synthetic DOM without a live popover.
+  window.__ccmRelocate = {
+    inject: inject, syncOrigin: syncOrigin, leadActions: leadActions,
+    realButtons: realButtons,
+  };
 })();
 
 /* ────────────────────────────────────────────────────────────────────────
