@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.136.0
+// @version      1.137.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -925,6 +925,49 @@ window.__ccmStyleEl = GM_addStyle(`
        still 18px under the dots (measured 2026-08-20). */
     margin-right: 52px !important;
   }
+
+  /* 31. Absolute per-message timestamps (v1.137, Ben 2026-08-22: "put timestamps
+     on the messages... nice to see when things happened in the session history").
+
+     The app ALREADY renders one per message - measured 2026-08-22 via ccm-domdump
+     on a real session: every transcript-row with data-perf-row human|assistant
+     carries a <time data-cds="RelativeTime" datetime="2026-08-19T00:03:19.856Z">
+     inside its [data-cds="MessageActions"] toolbar (marker rows carry none). But
+     it renders RELATIVE text - "4 days ago" - which answers "how long ago" and
+     not "when", which is the question Ben actually asked. So we keep the app's
+     element and re-label it.
+
+     The re-label is ATTRIBUTE-ONLY, deliberately. Writing textContent into a
+     React-owned node risks a reconciliation throw (the same reason the composer
+     "+" proxy forwards clicks instead of reparenting). The ccmMsgTime companion
+     below only sets data-ccm-ts on the <time>; this rule zeroes the element's own
+     font-size so the app's text nodes collapse to nothing, and paints ours from
+     content: attr(data-ccm-ts) on ::after. React never sees a child change, and
+     if it re-mounts the node the observer just re-stamps the attribute.
+
+     11px, not the stock 10px: rule 1's whole premise is that this UI ships text
+     too small for a phone, and the meta row is 20px tall so 11px still fits.
+     tabular-nums keeps the column from jittering as the minute rolls. */
+  time[data-cds="RelativeTime"][data-ccm-ts] {
+    font-size: 0 !important;
+    gap: 0 !important;
+    opacity: 1 !important;
+    white-space: nowrap !important;
+  }
+  time[data-cds="RelativeTime"][data-ccm-ts]::after {
+    content: attr(data-ccm-ts);
+    font-size: 11px;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Defensive: the toolbar carries data-reveal="fade", which is the app's own
+     hook for hover-revealed controls. It measured opacity:1 with no hover in the
+     Chromium rig (i.e. it is NOT gated the way rule 28's older toolbar was), but
+     a timestamp that only appears on hover would be useless on the phone, so pin
+     any toolbar that holds a stamped time. */
+  [data-cds="MessageActions"]:has(time[data-ccm-ts]) {
+    opacity: 1 !important;
+  }
 }
 `);
 /* v1.46 bisect: ccmCss=0 removes the entire stylesheet (keeps companion JS),
@@ -954,6 +997,7 @@ window.__ccmFlags = (function () {
     branch: f('ccmBranch', true),       // gates collapsing the branch rows behind a button (v1.130)
     sugg: f('ccmSugg', true),           // gates the tap-to-accept prompt-suggestion chip (v1.132)
     upd: f('ccmUpd', true),             // gates the "newer version published" reload chip (v1.135)
+    msgTime: f('ccmMsgTime', true),     // gates absolute per-message timestamps (v1.137)
   };
 })();
 
@@ -969,7 +1013,103 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.135.0';
+  return '1.137.0';
+})();
+
+/* ccmMsgTime - relabel every per-message <time> with an ABSOLUTE clock time.
+
+   See CSS rule 31 for the measured DOM and for why this only ever writes an
+   attribute. The division of labour: this module decides WHAT the label says and
+   stamps it into data-ccm-ts; the stylesheet decides how it is painted.
+
+   Format, tuned for a 412px phone reading back a long session:
+     - stamped today          -> "3:47 PM"
+     - stamped this year      -> "Aug 19, 3:47 PM"
+     - stamped another year   -> "Aug 19 2025, 3:47 PM"
+   Time-of-day comes from toLocaleTimeString so a 24h locale gets 15:47; the
+   date half is built by hand because toLocaleDateString's short forms vary in
+   width enough to reflow the toolbar.
+
+   Re-stamping: a 250ms trailing throttle, not a per-frame rAF like ccmSugg. The
+   document-wide characterData observer fires on every token of a streaming
+   assistant turn, and none of that traffic can change a timestamp - the throttle
+   keeps a long stream from paying a full-document querySelectorAll per frame.
+   The 60s interval is what rolls "3:47 PM" over to "Aug 22, 3:47 PM" when a
+   session left open crosses midnight.
+
+   Kill switch from the phone: claude.ai/code?ccmMsgTime=0 (the app's own "4 days
+   ago" comes back), ?ccmMsgTime=1 to re-enable - same shape as ?ccmZoom. */
+(function () {
+  try {
+    var v = new URLSearchParams(location.search).get('ccmMsgTime');
+    if (v === '0') { localStorage.setItem('ccmMsgTime', '0'); window.__ccmFlags.msgTime = false; }
+    else if (v === '1') { localStorage.removeItem('ccmMsgTime'); window.__ccmFlags.msgTime = true; }
+  } catch (e) { /* URLSearchParams/localStorage can throw in odd sandboxes */ }
+
+  var SEL = 'time[data-cds="RelativeTime"][datetime]';
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  function clock(d) {
+    var t;
+    try {
+      t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } catch (e) {
+      var h = d.getHours(), ap = h < 12 ? 'AM' : 'PM', h12 = h % 12 || 12;
+      var mi = d.getMinutes();
+      t = h12 + ':' + (mi < 10 ? '0' : '') + mi + ' ' + ap;
+    }
+    /* ICU emits a NARROW NO-BREAK SPACE before AM/PM in recent Chromium; it
+       renders fine but makes the label impossible to match in a test. */
+    return String(t).replace(/[  ]/g, ' ');
+  }
+
+  function label(d, now) {
+    if (!d || isNaN(d.getTime())) return null;
+    var t = clock(d);
+    if (d.getFullYear() === now.getFullYear() &&
+        d.getMonth() === now.getMonth() &&
+        d.getDate() === now.getDate()) return t;
+    var head = MONTHS[d.getMonth()] + ' ' + d.getDate();
+    if (d.getFullYear() !== now.getFullYear()) head += ' ' + d.getFullYear();
+    return head + ', ' + t;
+  }
+
+  function stamp(el, now) {
+    var iso = el.getAttribute('datetime');
+    if (!iso) return;
+    var txt = label(new Date(iso), now);
+    if (!txt) return;
+    /* Cheap idempotence: re-stamp only when the source instant or the rendered
+       label actually changed, so a re-mount is caught but a no-op sweep costs
+       one attribute read. */
+    if (el.getAttribute('data-ccm-src') === iso &&
+        el.getAttribute('data-ccm-ts') === txt) return;
+    el.setAttribute('data-ccm-src', iso);
+    el.setAttribute('data-ccm-ts', txt);
+  }
+
+  function sweep() {
+    try {
+      var now = new Date();
+      var list = document.querySelectorAll(SEL);
+      for (var i = 0; i < list.length; i++) stamp(list[i], now);
+    } catch (e) { /* never let a reconciliation race break the transcript */ }
+  }
+  window.__ccmMsgTime = { label: label, stamp: stamp, sweep: sweep };
+
+  if (!window.__ccmFlags.msgTime) return;
+
+  var timer = null;
+  function schedule() {
+    if (timer) return;
+    timer = setTimeout(function () { timer = null; sweep(); }, 250);
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true, characterData: true,
+  });
+  setInterval(sweep, 60000);
+  sweep();
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
