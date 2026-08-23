@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.139.0
+// @version      1.140.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1014,8 +1014,20 @@ window.__ccmStyleEl = GM_addStyle(`
 
      11px, not the stock 10px: rule 1's whole premise is that this UI ships text
      too small for a phone. tabular-nums keeps the column from jittering as the
-     minute rolls. */
-  [role="article"][data-ccm-ts]::after {
+     minute rolls.
+
+     v1.140 (Ben 2026-08-23: "I want to see it on all messages, not just the
+     last one"): on the REAL device most rows carry no <time> at all - measured
+     over CDP into the K4y Code WebView on his phone (13-row transcript: only
+     the first and last message rows had the toolbar <time>; every human turn
+     and every assistant text segment had none, which is why v1.138 stamped one
+     row there while stamping every row in the headless harness, where the app
+     mounts the toolbar everywhere). Those rows are stamped from the row's React
+     fiber (see the module), and the ones without a [role="article"] wrapper
+     get the attribute on the transcript-row itself - hence the second selector
+     on each rule here. */
+  [role="article"][data-ccm-ts]::after,
+  [data-testid="transcript-row"][data-ccm-ts]::after {
     content: attr(data-ccm-ts);
     display: block;
     padding-top: 2px;
@@ -1031,7 +1043,8 @@ window.__ccmStyleEl = GM_addStyle(`
      the toolbar puts the same information on screen twice. Hide it VISUALLY only
      - clipped rather than display:none - so the <time> stays in the a11y tree and
      React keeps owning an unmodified node. */
-  [role="article"][data-ccm-ts] time[data-cds="RelativeTime"] {
+  [role="article"][data-ccm-ts] time[data-cds="RelativeTime"],
+  [data-testid="transcript-row"][data-ccm-ts] time[data-cds="RelativeTime"] {
     position: absolute !important;
     width: 1px !important;
     height: 1px !important;
@@ -1092,7 +1105,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.138.0';
+  return '1.140.0';
 })();
 
 /* ccmMsgTime - give every message row its own always-visible timestamp line.
@@ -1197,11 +1210,7 @@ window.__ccmVer = (function () {
            el.closest('[data-testid="transcript-row"]');
   }
 
-  function stamp(el, now) {
-    var iso = el.getAttribute('datetime');
-    if (!iso) return;
-    var target = host(el);
-    if (!target) return;
+  function put(target, iso, now) {
     var txt = full(new Date(iso), now);
     if (!txt) return;
     /* Cheap idempotence: re-stamp only when the source instant or the rendered
@@ -1213,14 +1222,79 @@ window.__ccmVer = (function () {
     target.setAttribute('data-ccm-ts', txt);
   }
 
+  function stamp(el, now) {
+    var iso = el.getAttribute('datetime');
+    if (!iso) return;
+    var target = host(el);
+    if (!target) return;
+    put(target, iso, now);
+  }
+
+  /* v1.140 - most rows carry NO <time> on the real device (Ben: "I want to see
+     it on all messages, not just the last one"). Measured 2026-08-23 over CDP
+     into the K4y Code WebView on his phone, live 13-row session: only the first
+     and last message rows had the toolbar <time>; the human turns and every
+     assistant_text / assistant_other / assistant_tool segment had none. (The
+     headless harness mounts the toolbar on every row, so it cannot show this -
+     the same coarse-pointer blindness rule 31's comment already records.)
+
+     The timestamp still exists per row: the row's React fiber subtree carries
+     memoizedProps.entry.timestamp (full ISO, measured at depth 4-7 under the
+     row element's fiber). fiberIso() reads it with a bounded, subtree-only
+     walk - pure reads, and the START fiber's sibling is ANOTHER row, so
+     siblings are only followed below the root. The app can rename its fiber
+     internals any time; every miss degrades to "no label on that row", which
+     is exactly the pre-v1.140 behavior.
+
+     Only message-shaped rows are stamped. assistant_tool rows (the collapsed
+     "Ran N commands" chips) and marker rows are deliberately skipped - they
+     are not messages, and a stamp between every chip would put the same
+     reading on screen 3-4 times per turn. */
+  var FIBER_KINDS = { human: 1, assistant: 1, assistant_text: 1, assistant_other: 1 };
+  var fiberCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+
+  function fiberIso(row) {
+    if (fiberCache) {
+      var hit = fiberCache.get(row);
+      if (hit) return hit;
+    }
+    var fk = null, keys = Object.keys(row);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].lastIndexOf('__reactFiber$', 0) === 0) { fk = keys[i]; break; }
+    }
+    if (!fk) return null;
+    var stack = [{ f: row[fk], root: true, d: 0 }], seen = 0, iso = null;
+    while (stack.length && seen < 300) {
+      var cur = stack.pop(), f = cur.f;
+      if (!f) continue;
+      seen++;
+      var p = f.memoizedProps;
+      var e = p && typeof p === 'object' && p.entry;
+      if (e && typeof e.timestamp === 'string') { iso = e.timestamp; break; }
+      if (cur.d < 12 && f.child) stack.push({ f: f.child, d: cur.d + 1 });
+      if (!cur.root && f.sibling) stack.push({ f: f.sibling, d: cur.d });
+    }
+    if (iso && fiberCache) fiberCache.set(row, iso);
+    return iso;
+  }
+
   function sweep() {
     try {
       var now = new Date();
       var list = document.querySelectorAll(SEL);
       for (var i = 0; i < list.length; i++) stamp(list[i], now);
+      var rows = document.querySelectorAll('[data-testid="transcript-row"]');
+      for (var j = 0; j < rows.length; j++) {
+        var row = rows[j];
+        if (FIBER_KINDS[row.getAttribute('data-perf-row')] !== 1) continue;
+        if (row.querySelector(SEL)) continue; /* the app's own <time> already covers it */
+        var iso = fiberIso(row);
+        if (iso) put(row.querySelector('[role="article"]') || row, iso, now);
+      }
     } catch (e) { /* never let a reconciliation race break the transcript */ }
   }
-  window.__ccmMsgTime = { label: label, ago: ago, full: full, stamp: stamp, sweep: sweep };
+  window.__ccmMsgTime = { label: label, ago: ago, full: full, stamp: stamp,
+                          sweep: sweep, fiberIso: fiberIso };
 
   if (!window.__ccmFlags.msgTime) return;
 
