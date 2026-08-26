@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.141.0
+// @version      1.142.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -397,8 +397,42 @@ window.__ccmStyleEl = GM_addStyle(`
      The [data-ccm-branch-btn] exemption spares the branch-details toggle this
      script injects into the same cluster (v1.130) - it is a child of that span
      like every app action, so without the exemption the rule would hide the
-     button the moment it was inserted. */
-  [data-top-left="true"] .ml-auto > span > :not([aria-label^="Session actions"]):not([data-ccm-branch-btn]) {
+     button the moment it was inserted.
+
+     v1.142 - THE CLUSTER'S WRAPPER SHAPE CHANGED AND THE > span > SELECTOR
+     WENT DEAD (Ben 2026-08-26: "hide the folder, diff button, and share button
+     ... they used to be hidden"). Measured in-session at 412px on build
+     cea2a7f4 with this script injected: Diff sits at x:205 and Share at x:243,
+     both painted. The cluster is no longer span > buttons; .ml-auto is a div
+     whose direct children are div.gap-g3.empty:hidden (wrapping Diff), the
+     Share button, our branch chip, and the kebab - and .epitaxy-titlebar-fade
+     matches ZERO nodes anywhere in the bar now. A child-combinator selector
+     keyed on one wrapper level is exactly what a restructure like this kills,
+     silently, with no error.
+
+     So key on the two things that did NOT move - the kebab's aria-label and our
+     own attribute - and hide by exclusion at BOTH levels, which covers the old
+     shape, this one, and a future re-wrap:
+       (a) any direct child of the cluster that neither IS nor CONTAINS the
+           kebab / our chip (kills the Diff wrapper and Share today, and any
+           span wrapper the app reintroduces tomorrow);
+       (b) any button in the cluster that is not the kebab / our chip (the
+           belt-and-braces case where a future wrapper holds the kebab AND an
+           action, so (a) has to spare it).
+     Hiding the wrapper rather than only the button also collapses the flex gap
+     the empty wrapper would keep claiming.
+
+     The :has([aria-label^="Session actions"]) guard on the cluster itself is the
+     failure mode this rule has to degrade into. Hiding an action is only safe
+     because the companion JS forwards it into the kebab menu, and that JS reads
+     the cluster as kebab.parentElement - so if the kebab is NOT in this cluster
+     (renamed label, or a build that parks it in the lead group, which is exactly
+     what the frozen in-session test fixture has), nothing forwards and a bare
+     hide would strand Diff / Share with no way to reach them. With the guard the
+     rule simply stops firing and the bar degrades to "the actions are visible",
+     the same direction 12d degrades in. */
+  [data-top-left="true"] .ml-auto:has([aria-label^="Session actions"]) > :not([aria-label^="Session actions"]):not([data-ccm-branch-btn]):not(:has([aria-label^="Session actions"])):not(:has([data-ccm-branch-btn])),
+  [data-top-left="true"] .ml-auto:has([aria-label^="Session actions"]) button:not([aria-label^="Session actions"]):not([data-ccm-branch-btn]) {
     display: none !important;
   }
 
@@ -440,12 +474,24 @@ window.__ccmStyleEl = GM_addStyle(`
      immediately before firing the trigger and keeps it in step with the
      trigger's own aria-expanded, so the control is laid out for exactly as long
      as its menu is up. Failure degrades to "the controls are visible", i.e.
-     the pre-v1.139 bar, never to an orphaned popup. */
+     the pre-v1.139 bar, never to an orphaned popup.
+
+     v1.142 - the repo-pill half of this rule died with .epitaxy-titlebar-fade,
+     the same restructure that killed 12c's > span > (see 12c for the
+     measurement). The Cloud gutter half still matched and the cloud stayed
+     hidden, which is why Ben reported the folder back but not the cloud. The
+     pill now lives in span.relative.inline-flex > button >
+     span[data-testid="epitaxy-origin-label"], with no fade class anywhere.
+     Both replacement selectors below hang off the testid alone: the wrapper
+     form (a span whose direct-child button carries the label) collapses the
+     flex gap too, and the bare-button form is the fallback if that wrapper
+     ever goes away. */
   html:not([data-ccm-origin="open"]) [data-top-left="true"] > div:has([data-testid="epitaxy-origin-gutter"]) {
     padding-left: 4px !important;
   }
   html:not([data-ccm-origin="open"]) [data-top-left="true"] span:has(> [data-testid="epitaxy-origin-gutter"]),
-  html:not([data-ccm-origin="open"]) [data-top-left="true"] .epitaxy-titlebar-fade:has([data-testid="epitaxy-origin-label"]) {
+  html:not([data-ccm-origin="open"]) [data-top-left="true"] span:has(> button [data-testid="epitaxy-origin-label"]),
+  html:not([data-ccm-origin="open"]) [data-top-left="true"] button:has([data-testid="epitaxy-origin-label"]) {
     display: none !important;
   }
 
@@ -1022,7 +1068,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.141.0';
+  return '1.142.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -1118,13 +1164,20 @@ window.__ccmVer = (function () {
   }
 
   function realButtons(kebab) {
-    // The cluster span is the kebab's parent; its other children are the hidden
-    // action buttons. Return each one's clickable element + a label.
+    // The cluster is the kebab's parent; its other children are the hidden
+    // action buttons. Return each one's clickable element + a label. A child can
+    // be the button itself (Share) or a wrapper around it (Diff sits inside a
+    // div.gap-g3 on the 2026-08-26 build) - handled by the querySelector below,
+    // which is why this walk survived the restructure that killed rule 12c.
     var span = kebab.parentElement;
     if (!span) return [];
     var out = [];
     Array.prototype.forEach.call(span.children, function (c) {
       if (c === kebab || c.contains(kebab)) return;
+      // Our own branch chip (v1.130) is a cluster child that rule 12c
+      // deliberately leaves VISIBLE in the bar - forwarding it too would list it
+      // in the menu as a duplicate of a button that is right there.
+      if (c.hasAttribute('data-ccm-branch-btn') || c.querySelector('[data-ccm-branch-btn]')) return;
       var btn = (c.tagName === 'BUTTON') ? c : c.querySelector('button');
       if (!btn) return;
       var label = (btn.getAttribute('aria-label') || btn.textContent || '').trim();
