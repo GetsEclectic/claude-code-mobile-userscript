@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.142.0
+// @version      1.143.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -726,34 +726,60 @@ window.__ccmStyleEl = GM_addStyle(`
     display: none !important;
   }
 
-  /* 22. AskUserQuestion card: cap height so it never fills the screen, and make
-     its body scrollable so all option text + Submit/Skip are reachable without
-     the transcript being pushed off-screen. The card container is
-     .epitaxy-approval-card (same stable epitaxy- naming as .epitaxy-composer-width
-     etc.), confirmed via --ancestry [aria-label="Dismiss question"]: it is the
-     first non-button, non-span ancestor with meaningful size, and it is the
-     natural scroll host because it wraps title, all option rows, the free-text
-     input, and the Submit/Skip footer. Cap at 40vh so the card occupies under
-     half the screen and the transcript stays clearly readable above it; any
-     overflow scrolls within the card. overflow-y:auto not hidden so Submit/Skip
-     (inside the card) are reachable by scrolling. */
+  /* 22. AskUserQuestion card: cap height so it never fills the screen, leaving
+     the transcript above it readable. Cap only - the SCROLLING is the app's own
+     now, and rule 22b used to break it (see below).
+
+     v1.143 (Ben 2026-08-26: "it doesn't seem to be scrollable any more and it
+     gets cut off"). The app has since restructured this card and shipped its own
+     scroll architecture. Measured live by walking document.styleSheets[].cssRules
+     for /approval/ (bin/ccm-domdump + an inject-js probe; the rules are present
+     in the sheet even when no card is mounted, which is what made this
+     diagnosable without holding a question open):
+
+       .epitaxy-root .epitaxy-approval-card { max-height: 60vh;
+                                              flex-direction: column; ... }
+       .epitaxy-root .epitaxy-approval-body { min-height: 0px; overflow-y: auto;
+                                              overscroll-behavior: contain; ... }
+       .epitaxy-root .epitaxy-approval-body > * { flex-shrink: 0; }
+
+     So the app already caps the card AND gives it a dedicated inner scroll host,
+     .epitaxy-approval-body, whose min-height:0 is exactly what lets it shrink
+     below its content inside the column flex and therefore overflow. All we still
+     want is our tighter cap; keep 40vh so the card stays under half the screen.
+     !important is load-bearing - the app's selector is (0,2,0) and ours (0,1,0).
+
+     overflow-y:auto on the card is now inert (the body absorbs the overflow, so
+     the card never exceeds its own client box) and is kept only as a fallback in
+     case the app ever drops the body again. */
   .epitaxy-approval-card {
     max-height: 40vh !important;
     overflow-y: auto !important;
   }
-  /* 22b. Capping the card at 40vh (rule 22) turns it into a height-constrained
-     flex column. Its flex children (the question title, the options list, the
-     footer) then have room to SHRINK below their content height — and the title
-     is a flex item whose text overflows visibly. The result on real Android
-     (Ben's 2026-05-31 screenshot): the title collapses toward zero height, the
-     option rows lay out from the top of the card as if the title took no space,
-     and the bold title text paints DOWN over the first option cards. This is a
-     pure flex-shrink collapse, not a sticky/absolute/paint issue — it only
-     appears because rule 22 constrains the height. Fix: forbid the card's direct
-     children from shrinking and restore their auto min-height, so each keeps its
-     full content height and the card (overflow-y:auto) scrolls instead of
-     letting items overlap. */
-  .epitaxy-approval-card > * {
+  /* 22b. Capping the card (rule 22) turns it into a height-constrained flex
+     column, and its children then have room to SHRINK below their content
+     height. For the title that is a bug: it collapses toward zero height, the
+     option rows lay out as if it took no space, and the bold title text paints
+     DOWN over the first option cards (Ben's 2026-05-31 screenshot). Forbidding
+     the card's direct children from shrinking fixes that.
+
+     v1.143: but the ORIGINAL form of this rule was ".epitaxy-approval-card > *"
+     with "flex-shrink: 0 !important; min-height: auto !important", and once the
+     app introduced .epitaxy-approval-body that blanket selector started matching
+     the app's own scroll host and reverting BOTH properties it depends on. With
+     min-height back to auto the body can no longer shrink below its content, so
+     it grows to full height and never overflows - nothing to scroll - while the
+     card, capped at 40vh, clips it. And because the body carries
+     overscroll-behavior:contain, a drag that starts inside it cannot chain up to
+     the card either. Net effect on the phone: the panel is cut off and NOTHING
+     moves under your finger, which is exactly what Ben reported.
+
+     So: exempt the body from both overrides. The title-collapse protection still
+     applies to the card's other direct children (header/footer), the body stays
+     shrinkable and keeps scrolling, and the app's own
+     ".epitaxy-approval-body > * { flex-shrink: 0 }" covers the rows inside it.
+     Never re-broaden this selector to "> *" - the body must stay exempt. */
+  .epitaxy-approval-card > *:not(.epitaxy-approval-body) {
     flex-shrink: 0 !important;
     min-height: auto !important;
   }
