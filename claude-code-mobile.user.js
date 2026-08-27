@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.143.0
+// @version      1.144.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -322,26 +322,34 @@ window.__ccmStyleEl = GM_addStyle(`
     right: 0 !important;
   }
 
-  /* 12. In-session title bar reads "[session title] [repo pill] [branch pill]".
-     The repo pill is always the same repo and the branch pill ("Remote") steal
-     horizontal room, so the title truncates early — hide them to reclaim it.
+  /* 12. RETIRED in v1.144 - the repo-pill hide now lives in rule 12d.
 
-     claude.ai restructured this bar (Ben 2026-06-19: "most of the top bar is
-     hidden"). The old selector  data-top-left .draggable-none > span  now matches
-     TWO wrappers — the LEFT .draggable-none whose single span holds the
-     session-title button AND the repo pills together, and the RIGHT
-     .draggable-none whose single span holds the action buttons (artifacts /
-     background-tasks badges, Diff, Share, Session actions) — so the rule hid the
-     ENTIRE bar, leaving only the sidebar toggle.
+     This slot used to hold
+       [data-top-left="true"] .epitaxy-titlebar-fade .epitaxy-titlebar-fade
+     which hid the repo pills by their nesting depth. claude.ai removed the
+     .epitaxy-titlebar-fade class from the title bar entirely, so the rule went
+     dead SILENTLY - no error, nothing in the console, the pills just came back
+     (Ben 2026-08-27: "they used to be hidden, I guess something changed").
+     Rule 12d took over in v1.142 keyed on data-testid=epitaxy-origin-label.
 
-     The repo-pills group is the inner .epitaxy-titlebar-fade span NESTED inside
-     the title wrapper's outer .epitaxy-titlebar-fade span; the title button is a
-     non-fade sibling and the right section's fade span has no nested fade — so
-     the nested .epitaxy-titlebar-fade selector below hits only the repo pills,
-     leaving the title and the right-side actions visible. */
-  [data-top-left="true"] .epitaxy-titlebar-fade .epitaxy-titlebar-fade {
-    display: none !important;
-  }
+     Measured before removing (2026-08-27, scripts/dom_tree.py over fresh
+     bin/ccm-domdump snapshots): zero elements carry the class on the live
+     in-session view AND zero on the live session-list view, whose title bar has
+     no children in either the lead group or .ml-auto. The nine remaining hits a
+     grep finds in a dump are this stylesheet's own prose, not markup.
+
+     Two lessons kept from the original comment, both still live:
+     - Never key a title-bar rule on a WRAPPER LEVEL or an .epitaxy-* class.
+       Both die silently across an upstream restructure. Key on data-testid,
+       aria-label, or our own data-ccm-* attributes.
+     - The even older selector  data-top-left .draggable-none > span  matched
+       BOTH .draggable-none wrappers (left: title + pills, right: the action
+       buttons) and so hid the ENTIRE bar, leaving only the sidebar toggle
+       (Ben 2026-06-19: "most of the top bar is hidden"). A ">"-anchored rule
+       here is one restructure away from over-matching, not just under-matching.
+
+     Rules 12b, 12c and 12d below still say "rule 12 hides the repo pills"; read
+     that as "the repo pills are hidden" - 12d is what does it now. */
 
   /* 12b. Even with the repo pills hidden (rule 12), the session title still
      truncates early ("Lexo feedback fro…", Ben 2026-06-22) because the RIGHT
@@ -1094,7 +1102,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.142.0';
+  return '1.144.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
