@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.144.0
+// @version      1.145.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -79,8 +79,9 @@ window.__ccmStyleEl = GM_addStyle(`
   /* 2. Icon-only buttons get a real 44x44 finger target. */
   [aria-label="Send"], [aria-label="Add"], [aria-label="Copy message"],
   [aria-label="Pin as chapter"], [aria-label^="Session actions"],
-  [aria-label="Dismiss question"],
-  [aria-label="Open sidebar"], [aria-label="Close side chat"],
+  [aria-label="Dismiss question"], [aria-label="Message actions"],
+  [aria-label="Open sidebar"], [aria-label="Show sidebar"],
+  [aria-label="Close side chat"],
   [aria-label="Share"], [aria-label="Views"], [aria-label="Filter"],
   [aria-label="Dismiss"], [aria-label^="Usage"], [aria-label^="More options"],
   [aria-label^="Branch details"] {
@@ -152,10 +153,18 @@ window.__ccmStyleEl = GM_addStyle(`
   }
 
   /* 6. Transcript prose ships at 14px — nudge the message body up to match the
-     larger controls. */
+     larger controls.
+
+     v1.145: the 2026-08-28 redesign (app build 424f18fb84) removed
+     .epitaxy-markdown outright and renamed the prose wrapper to
+     .epitaxy-transcript-typography. Both are listed — the old one costs nothing
+     and covers any view still on the prior class. */
   .epitaxy-markdown,
   .epitaxy-markdown p,
-  .epitaxy-markdown li {
+  .epitaxy-markdown li,
+  .epitaxy-transcript-typography,
+  .epitaxy-transcript-typography p,
+  .epitaxy-transcript-typography li {
     font-size: 16px !important;
     line-height: 1.55 !important;
   }
@@ -174,11 +183,20 @@ window.__ccmStyleEl = GM_addStyle(`
      any view still on the prior class. The override is mechanism-agnostic:
      max-width:none releases a width-constrained centered column, then the 12px
      padding insets it — so it reclaims the gutter whether the app drives it with
-     a max-width or with horizontal padding. */
+     a max-width or with horizontal padding.
+
+     v1.145: the 2026-08-28 redesign renamed BOTH halves again —
+     .epitaxy-transcript-width -> .epitaxy-transcript-region and
+     .epitaxy-composer-width -> .epitaxy-composer-band — which is what reverted
+     the gutter for Ben on reload. Same mechanism-agnostic override, new hooks
+     appended; the superseded names stay listed (they cost nothing and this rule
+     has now survived three renames). */
   .epitaxy-chat-size,
   .epitaxy-default-view-width,
   .epitaxy-transcript-width,
-  .epitaxy-composer-width {
+  .epitaxy-composer-width,
+  .epitaxy-transcript-region,
+  .epitaxy-composer-band {
     max-width: none !important;
     padding-left: 4px !important;
     padding-right: 12px !important;
@@ -305,7 +323,8 @@ window.__ccmStyleEl = GM_addStyle(`
      reaches past the screen's top-left corner (18px above and left of the chip,
      8px below), but stops at the chip's right edge so it never steals taps from
      the title text in the gutter. */
-  aside.dframe-sidebar [aria-label="Open sidebar"] {
+  aside.dframe-sidebar [aria-label="Open sidebar"],
+  aside.dframe-sidebar [aria-label="Show sidebar"] {
     height: 32px !important;
     min-height: 32px !important;
     width: 32px !important;
@@ -313,7 +332,8 @@ window.__ccmStyleEl = GM_addStyle(`
     background: rgba(128, 128, 128, 0.2) !important;
     position: relative !important;
   }
-  aside.dframe-sidebar [aria-label="Open sidebar"]::after {
+  aside.dframe-sidebar [aria-label="Open sidebar"]::after,
+  aside.dframe-sidebar [aria-label="Show sidebar"]::after {
     content: "" !important;
     position: absolute !important;
     top: -18px !important;
@@ -556,12 +576,15 @@ window.__ccmStyleEl = GM_addStyle(`
      toolbar in-session (v1.105: was .epitaxy-chat-column before the app's
      composer restructure removed that class; live probe confirmed the toolbar
      now sits directly under .epitaxy-composer-width). */
-  .epitaxy-composer-width [class*="py-[4px]"] {
+  .epitaxy-composer-width [class*="py-[4px]"],
+  .epitaxy-composer-band [class*="py-[4px]"] {
     padding-top: 1px !important;
     padding-bottom: 1px !important;
   }
   .epitaxy-composer-width [class*="py-[4px]"] button,
-  .epitaxy-composer-width [class*="py-[4px]"] [role="button"] {
+  .epitaxy-composer-width [class*="py-[4px]"] [role="button"],
+  .epitaxy-composer-band [class*="py-[4px]"] button,
+  .epitaxy-composer-band [class*="py-[4px]"] [role="button"] {
     min-height: 0 !important;
     font-size: 13px !important;
   }
@@ -716,7 +739,9 @@ window.__ccmStyleEl = GM_addStyle(`
      removed that class; live probe confirmed every pt-[4px] "Show message
      actions" row now sits under .epitaxy-transcript-width). */
   .epitaxy-transcript-width [class*="pt-[4px]"] button,
-  .epitaxy-transcript-width [class*="pt-[4px]"] [role="button"] {
+  .epitaxy-transcript-width [class*="pt-[4px]"] [role="button"],
+  .epitaxy-transcript-region [class*="pt-[4px]"] button,
+  .epitaxy-transcript-region [class*="pt-[4px]"] [role="button"] {
     min-height: 0 !important;
     min-width: 0 !important;
   }
@@ -806,7 +831,8 @@ window.__ccmStyleEl = GM_addStyle(`
      "unread/total" (2/7); when every waiting session has been viewed the
      companion adds .ccm-idle-badge--seen and the chip shows just the total in
      muted grey, so the amber only ever means "something new for you". */
-  aside.dframe-sidebar [aria-label="Open sidebar"] .ccm-idle-badge {
+  aside.dframe-sidebar [aria-label="Open sidebar"] .ccm-idle-badge,
+  aside.dframe-sidebar [aria-label="Show sidebar"] .ccm-idle-badge {
     position: absolute !important;
     top: -7px !important;
     right: -7px !important;
@@ -826,7 +852,8 @@ window.__ccmStyleEl = GM_addStyle(`
     box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35) !important;
     z-index: 5 !important;
   }
-  aside.dframe-sidebar [aria-label="Open sidebar"] .ccm-idle-badge.ccm-idle-badge--seen {
+  aside.dframe-sidebar [aria-label="Open sidebar"] .ccm-idle-badge.ccm-idle-badge--seen,
+  aside.dframe-sidebar [aria-label="Show sidebar"] .ccm-idle-badge.ccm-idle-badge--seen {
     background: #6b7280 !important;
   }
 
@@ -1775,7 +1802,8 @@ window.__ccmVer = (function () {
   function dockEl() {
     var p = document.querySelector('.epitaxy-prompt');
     if (p && p.parentElement &&
-        p.parentElement.classList.contains('epitaxy-composer-width')) return p.parentElement;
+        (p.parentElement.classList.contains('epitaxy-composer-width') ||
+         p.parentElement.classList.contains('epitaxy-composer-band'))) return p.parentElement;
     return null;
   }
   function statusRow() {
@@ -2787,7 +2815,9 @@ window.__ccmVer = (function () {
    We do NOT blur/force the keyboard down ourselves: opening the drawer moves
    focus into it (React focus-trap), dropping the keyboard on its own. */
 (function () {
-  var SEL = '[aria-label="Open sidebar"]';
+  // v1.145: the 2026-08-28 redesign renamed the opener "Open sidebar" ->
+  // "Show sidebar". Match both so this keeps working either side of the rename.
+  var SEL = '[aria-label="Open sidebar"], [aria-label="Show sidebar"]';
   var sx = 0, sy = 0, tracking = false, fireOwn = false, ownFiredAt = 0;
 
   document.addEventListener('pointerdown', function (e) {
@@ -4027,8 +4057,9 @@ window.__ccmVer = (function () {
   }
 
   function paint() {
-    var btn = document.querySelector('aside.dframe-sidebar [aria-label="Open sidebar"]')
-           || document.querySelector('[aria-label="Open sidebar"]');
+    // v1.145: "Open sidebar" -> "Show sidebar" in the 2026-08-28 redesign.
+    var btn = document.querySelector('aside.dframe-sidebar [aria-label="Open sidebar"], aside.dframe-sidebar [aria-label="Show sidebar"]')
+           || document.querySelector('[aria-label="Open sidebar"], [aria-label="Show sidebar"]');
     if (!btn) return;
 
     if (!window.matchMedia(MQ).matches) {
