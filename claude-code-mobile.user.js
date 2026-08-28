@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.145.0
+// @version      1.146.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -78,6 +78,7 @@ window.__ccmStyleEl = GM_addStyle(`
 
   /* 2. Icon-only buttons get a real 44x44 finger target. */
   [aria-label="Send"], [aria-label="Add"], [aria-label="Copy message"],
+  [aria-label="Copy"],
   [aria-label="Pin as chapter"], [aria-label^="Session actions"],
   [aria-label="Dismiss question"], [aria-label="Message actions"],
   [aria-label="Open sidebar"], [aria-label="Show sidebar"],
@@ -458,9 +459,21 @@ window.__ccmStyleEl = GM_addStyle(`
      what the frozen in-session test fixture has), nothing forwards and a bare
      hide would strand Diff / Share with no way to reach them. With the guard the
      rule simply stops firing and the bar degrades to "the actions are visible",
-     the same direction 12d degrades in. */
+     the same direction 12d degrades in.
+
+     v1.146: that degrade-safely design is exactly what saved the title bar on
+     2026-08-28, when the redesign relabelled the kebab "Session actions" ->
+     "More options for <session title>" (the same pattern the sidebar ROW kebabs
+     use, which is why the new pair below stays scoped under [data-top-left] -
+     unscoped it would hide half of every recents row). The guard stopped
+     matching, the rule stopped firing, and the bar degraded to "actions
+     visible" instead of stranding them. The two label spellings get their own
+     complete pair each: a cross-product would let a rule keyed on one spelling
+     hide the kebab named by the other. */
   [data-top-left="true"] .ml-auto:has([aria-label^="Session actions"]) > :not([aria-label^="Session actions"]):not([data-ccm-branch-btn]):not(:has([aria-label^="Session actions"])):not(:has([data-ccm-branch-btn])),
-  [data-top-left="true"] .ml-auto:has([aria-label^="Session actions"]) button:not([aria-label^="Session actions"]):not([data-ccm-branch-btn]) {
+  [data-top-left="true"] .ml-auto:has([aria-label^="Session actions"]) button:not([aria-label^="Session actions"]):not([data-ccm-branch-btn]),
+  [data-top-left="true"] .ml-auto:has([aria-label^="More options for "]) > :not([aria-label^="More options for "]):not([data-ccm-branch-btn]):not(:has([aria-label^="More options for "])):not(:has([data-ccm-branch-btn])),
+  [data-top-left="true"] .ml-auto:has([aria-label^="More options for "]) button:not([aria-label^="More options for "]):not([data-ccm-branch-btn]) {
     display: none !important;
   }
 
@@ -600,7 +613,12 @@ window.__ccmStyleEl = GM_addStyle(`
      ready to send" without disappearing. Works on both light and dark themes:
      coral is a mid-tone that contrasts with either composer fill, white icon
      reads on coral in both. */
-  .epitaxy-prompt .self-end button .btn-squish {
+  /* v1.146: the 2026-08-28 redesign renamed the fill span globally,
+     .btn-squish -> .cds-btn-squish (48 of the new name vs 1 of the old in a live
+     in-session dump), which is what dropped the coral off Send/Stop. Both listed;
+     rule 24's steer cue below needs the same pair. */
+  .epitaxy-prompt .self-end button .btn-squish,
+  .epitaxy-prompt .self-end button .cds-btn-squish {
     background: #d97757 !important;
   }
   .epitaxy-prompt .self-end button {
@@ -872,7 +890,8 @@ window.__ccmStyleEl = GM_addStyle(`
   button[aria-label="Stop"][data-ccm-steer] {
     position: relative !important;
   }
-  button[aria-label="Stop"][data-ccm-steer] .btn-squish {
+  button[aria-label="Stop"][data-ccm-steer] .btn-squish,
+  button[aria-label="Stop"][data-ccm-steer] .cds-btn-squish {
     background: #2c84db !important;
   }
   button[aria-label="Stop"][data-ccm-steer] svg {
@@ -972,8 +991,18 @@ window.__ccmStyleEl = GM_addStyle(`
      Match the toolbar by its hover-state utility class (the slash and colon are
      literal inside the quoted attribute value) and pin it on. The popover that
      More-options opens is portaled to the body, so once the button is tappable
-     the fork/revert items render normally. (Ben, 2026-06-14.) */
-  [class*="group-hover/msg:opacity-100"] {
+     the fork/revert items render normally. (Ben, 2026-06-14.)
+
+     v1.146: the 2026-08-28 redesign dropped the Tailwind hover utility entirely
+     (group-hover/msg is now 0 occurrences in a live in-session dump). The
+     toolbar is div[data-cds="MessageActions"][data-reveal="fade"][role="toolbar"]
+     and the app now reveals it from :hover / :focus-within on an ancestor
+     [data-cds-actions-scope] - still a pointer-only trigger, so touch still
+     needs the pin. Keyed on the stable data-cds hook, not the reveal utility.
+     NOTE: this whole CSS block is a template literal - never use a backtick in
+     a comment here, it terminates the string (cost one red gate, 2026-08-28). */
+  [class*="group-hover/msg:opacity-100"],
+  [data-cds="MessageActions"] {
     opacity: 1 !important;
     pointer-events: auto !important;
   }
@@ -1158,7 +1187,11 @@ window.__ccmVer = (function () {
   // session has activity, "Session actions, new activity" (claude.ai appends the
   // suffix dynamically). Exact-match silently found nothing once the suffix
   // appeared, so nothing forwarded into the menu.
-  var KEBAB = '[aria-label^="Session actions"]';
+  // v1.146: the 2026-08-28 redesign relabelled it again, to "More options for
+  // <session title>". The sidebar's per-row kebabs carry that same label, so the
+  // new spelling MUST stay scoped under [data-top-left="true"] or this module
+  // would latch onto a recents row and forward into the wrong menu.
+  var KEBAB = '[aria-label^="Session actions"], [data-top-left="true"] [aria-label^="More options for "]';
   // v1.139 lead-group controls, hidden by rule 12d and forwarded like the
   // cluster ones. Both are data-testid hooks, which survived the restructure
   // that broke rule 12's class-shape selector.
@@ -1431,7 +1464,9 @@ window.__ccmVer = (function () {
   window.__ccmBranch = on;
   if (!on) return;
 
-  var KEBAB = '[aria-label^="Session actions"]';
+  // v1.146: same relabel as the kebab-relocation module above - scoped to the
+  // title bar so the branch button can't anchor off a sidebar row's kebab.
+  var KEBAB = '[aria-label^="Session actions"], [data-top-left="true"] [aria-label^="More options for "]';
   var ROW = '.epitaxy-branch-row';
   var BTN = '[data-ccm-branch-btn]';
 
