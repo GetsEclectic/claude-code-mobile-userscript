@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.146.1
+// @version      1.147.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -191,7 +191,41 @@ window.__ccmStyleEl = GM_addStyle(`
      .epitaxy-composer-width -> .epitaxy-composer-band — which is what reverted
      the gutter for Ben on reload. Same mechanism-agnostic override, new hooks
      appended; the superseded names stay listed (they cost nothing and this rule
-     has now survived three renames). */
+     has now survived three renames).
+
+     v1.147: stop chasing the class name. .epitaxy-transcript-region matches
+     ZERO elements in build 0d8ea5233b (measured 2026-08-28, in-session dump at
+     Ben's real 448px viewport, then again on the phone), so the transcript half
+     of the rule went dead within a day of being added while the composer half
+     stayed live. The class names churn because they are implementation details.
+     What has NOT churned across all three renames is the layout math: the app
+     insets the transcript, the composer and the header with the SAME Tailwind
+     pattern, ps-[var(--chat-gutter-start,var(--chat-gutter,32px))] inside a
+     max-w-[calc(var(--max-content-width)+...)] column. Those custom properties
+     inherit, so setting them once on :root reclaims the gutter everywhere the
+     app uses that pattern - including any element the next rename introduces,
+     which is the whole point. The class list below stays as a belt-and-braces
+     fallback for a view still rendering an older hook. */
+  :root {
+    --chat-gutter: 4px;
+    --chat-gutter-start: 4px;
+    --chat-gutter-end: 12px;
+  }
+  /* The :root block above reclaims the LEFT gutter only (32px -> 4px, measured
+     live 2026-08-28). The right one survives it because the app declares
+     --chat-gutter-end: calc(var(--chat-gutter) + var(--tiles-padding)) as an
+     INLINE style on the layout grid, and an inline declaration beats an
+     inherited :root one, so the column kept padding-right: 40px on a 448px
+     phone: 9% of the screen reserved for a split-view tile that is not open.
+     A stylesheet !important is the one thing that outranks a normal inline
+     declaration, and the style attribute itself is the stable hook here: it is
+     the app's own layout math, not a class name that gets renamed monthly.
+     Backticks are deliberately absent from this whole comment: it lives inside
+     the GM_addStyle template literal, where one closes the string and breaks
+     every rule below it (caught by ccm-publish's parse gate, 2026-08-28). */
+  [style*="--chat-gutter-end"] {
+    --chat-gutter-end: 12px !important;
+  }
   .epitaxy-chat-size,
   .epitaxy-default-view-width,
   .epitaxy-transcript-width,
@@ -1165,7 +1199,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.146.1';
+  return '1.147.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
