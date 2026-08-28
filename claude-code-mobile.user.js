@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.146.0
+// @version      1.146.1
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1150,15 +1150,22 @@ window.__ccmFlags = (function () {
    GM_info (always supplied by Violentmonkey, no @grant needed) so it cannot
    drift from the metadata block the way the hand-maintained telemetry constant
    did - that one still said 1.82.0 at v1.134. The literal is only the fallback
-   for a context with no GM_info at all (the dump harness injects this file as
-   plain JS), and is the one place to bump by hand. */
+   for a context with no GM_info at all, and is the one place to bump by hand.
+
+   "Only the dump harness" was wrong, and it cost a wrong reading. K4y Code's
+   ccm-gm-shim.js deliberately does not define GM_info either, so INSIDE THE APP
+   this literal is the only version the page can report - and it sat at 1.144.0
+   through the 1.146.0 publish, making the phone's live DOM claim 1.144.0 while
+   running 1.146.0. bin/ccm-publish now refuses to publish while the two
+   disagree, because the version this reports is the instrument that says
+   whether an update landed. */
 window.__ccmVer = (function () {
   try {
     if (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.144.0';
+  return '1.146.1';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
