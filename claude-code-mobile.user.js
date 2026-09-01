@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.147.0
+// @version      1.148.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,13 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.148: the keyboard-down-on-session-switch guard now covers TAP-driven
+   switches, not just swipes. Tapping a Recents row in the drawer or a card on
+   the home list arms the same guard window a swipe arms - force re-suppressing
+   every composer already in the DOM and blurring the focused one before the
+   route change - with a pathname watcher as the backstop for the back button
+   and deep links. The New-session row is deliberately excluded.
 
    v1.139: the two remaining lead-group controls - the "Cloud" origin button in
    the title bar's left gutter and the repo (folder) pill on the title's right -
@@ -1199,7 +1206,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.147.0';
+  return '1.148.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -3003,6 +3010,55 @@ window.__ccmVer = (function () {
   var BLUR_MAX = 6;
   var blurEpoch = 0, blurs = 0;
 
+  /* v1.148 - the guard window is no longer swipe-only.
+     Ben, 2026-09-01: "it's only when I have the keyboard up and I tap the top
+     left menu, the keyboard goes away, then I tap a session and it comes up
+     again." That is the ONE path the module never covered. Everything below
+     (suppress/release/observer/focusin) shipped armed by the swipe module and
+     nothing else, so a session opened by TAPPING - a drawer Recents row or a
+     card on the home list - got only the inputmode="none" half.
+
+     Why that half is not enough in the venue Ben is actually in. K4y Code is a
+     Chromium WebView, and the composer he tapped earlier in the session was
+     released by that tap (data-ccm-kb="live", natural inputmode restored). On
+     the switch it is either re-focused as the same element - where suppress()
+     returns early on `seen && !force`, so it keeps its natural inputmode - or
+     remounted and focused inside React's commit task, where the observer
+     microtask loses the race and only the capture-phase focusin can write the
+     attribute, i.e. AFTER the engine has already requested the show. The
+     measured remedy for both is the synchronous blur() below, and it runs only
+     while __ccmKbGuardUntil is armed.
+
+     So arm it on the tap itself, before the route change: the same window the
+     swipe module opens, plus a force re-suppress of every composer already in
+     the DOM so the attribute is present BEFORE the new route takes focus.
+     A deliberate composer tap still clears the guard (pointerdown handler
+     below), so this never fights real typing. */
+  var GUARD_MS = 4500;
+
+  /* Stable hooks only - hrefs, aria-label, data-* - never an epitaxy- class:
+     this app renames those monthly.
+
+     Scoped to things that open an EXISTING session, not "anything in the
+     drawer". The drawer's New-session row is a [data-row-main-button] button
+     like Routines and Customize, and starting a new session is the one nav
+     where landing with the composer live is what you want - so it must not
+     match. Recents rows and home cards are anchors carrying the session id,
+     which is also what the pathname backstop keys on. */
+  var NAV = 'a[href*="/code/session_"], [aria-label^="Open session"],'
+    + ' [data-testid="session-card"]';
+
+  function armGuard() {
+    window.__ccmKbGuardUntil = Date.now() + GUARD_MS;
+    var nodes = document.querySelectorAll(COMPOSER);
+    for (var i = 0; i < nodes.length; i++) suppress(nodes[i], true);
+    try {
+      var ae = document.activeElement;
+      if (ae && ae.closest && ae.closest(COMPOSER)) ae.blur();
+    } catch (e) { /* swallow */ }
+    if (window.__ccmDbg) window.__ccmDbg.log('nokb.arm', null);
+  }
+
   // Suppress the keyboard for a composer: inputmode="none" so focus doesn't
   // raise the VK. Stash the natural inputmode so a real tap can restore it.
   // force=true re-suppresses a composer that was already released by a tap -
@@ -3120,8 +3176,31 @@ window.__ccmVer = (function () {
     if (el) {
       window.__ccmKbGuardUntil = 0;   // a deliberate tap ends any swipe guard
       release(el);
+      return;
     }
+    // Tap-driven session switch (drawer Recents row, home session card): arm
+    // the same guard the swipe module arms, BEFORE the route change - see
+    // GUARD_MS. Ordered after the composer branch so a composer tap, which
+    // must clear the guard rather than arm it, can never reach here.
+    if (t && t.closest && t.closest(NAV)) armGuard();
   }, true);
+
+  /* Backstop for entry paths with no tap of ours to hang off: the hardware
+     back button, a deep link, or a nav whose row is neither an anchor nor
+     inside the drawer. Watching the pathname costs nothing here - the observer
+     above already fires on every route change - and re-arming is idempotent.
+     It lands AFTER the navigation, so it cannot beat a same-task autofocus on
+     its own; the pointerdown arm above is what covers that case. */
+  var lastPath = location.pathname;
+  function watchPath() {
+    if (location.pathname === lastPath) return;
+    lastPath = location.pathname;
+    if (/^\/code\/session_/.test(lastPath)) armGuard();
+  }
+  new MutationObserver(watchPath).observe(document.documentElement, {
+    childList: true, subtree: true,
+  });
+  window.addEventListener('popstate', watchPath);
 })();
 
 /* Companion to rule 21. The Routines and Customize sidebar rows have no stable
