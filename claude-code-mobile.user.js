@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.148.0
+// @version      1.149.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,13 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.149: re-hide the repo / PR bar above the composer. claude.ai dropped the
+   .epitaxy-branch-row class both rule 8 and the ccmBranch module keyed on, so the
+   bar came back - inflated to 40-44px per control by rules 1/2/4, i.e. taller
+   than stock - and the title-bar diffstat chip that opens it disappeared at the
+   same time, because diffStat() summed nothing. Both now anchor on
+   nav[aria-label="Repository and pull request controls"], with the old hooks kept.
 
    v1.148: the keyboard-down-on-session-switch guard now covers TAP-driven
    switches, not just swipes. Tapping a Recents row in the drawer or a card on
@@ -267,8 +274,32 @@ window.__ccmStyleEl = GM_addStyle(`
      sits in a flex-column parent with a gap, so a zero-height nav still spends one
      gap. The :has() rule collapses the nav itself, but ONLY when every child is a
      branch row — that same <nav> is the generic composer-aux slot and may hold
-     rows we must never hide. */
-  html:not([data-ccm-branch="open"]) .epitaxy-branch-row {
+     rows we must never hide.
+
+     v1.149: .epitaxy-branch-row is GONE from the app (Ben 2026-09-07: "pr info on
+     web ui is no longer hidden"). Measured live in-session on session_013rBM…
+     (bin/ccm-domdump, control vs --inject-userjs): with the userscript the bar
+     rendered at y=657 as "k4y-apps | session/welding-bug | +282 −62 | Create PR |
+     Dismiss", each control 40-44px tall — BIGGER than stock (24px), because rules
+     1/2/4 inflated the very row this rule was supposed to hide. Zero elements
+     matched .epitaxy-branch-row; the row is now an unnamed utility-class div,
+
+       <nav aria-label="Repository and pull request controls" class="scroll-fade-y …">
+         <div class="… min-h-[40px] p-[8px] rounded-[10px] bg-alpha-1 @container/branch-row">
+           <div class="flex-1 …">  button.epitaxy-branch-repo, branch button
+           <div class="epitaxy-branch-trailing contents">  diffstat, Create PR split
+                                                           button, [aria-label=Dismiss]
+
+     so the third hook this rule has needed. Per the standing lesson (rule 12's
+     comment, and the 2026-08-28 rename sweep): key on aria-label, never on an
+     .epitaxy-* class, and APPEND rather than replace. The <nav> now carries its own
+     aria-label naming exactly this content, which is a stronger anchor than the
+     old :has() shape guard was — the "may hold rows we must never hide" worry does
+     not apply to a nav the app itself labels "Repository and pull request
+     controls". Both older selectors stay: they cost nothing and cover an older
+     build. */
+  html:not([data-ccm-branch="open"]) .epitaxy-branch-row,
+  html:not([data-ccm-branch="open"]) nav[aria-label="Repository and pull request controls"] {
     display: none !important;
   }
   html:not([data-ccm-branch="open"]) nav:has(> .epitaxy-branch-row):not(:has(> :not(.epitaxy-branch-row))) {
@@ -277,17 +308,27 @@ window.__ccmStyleEl = GM_addStyle(`
   /* Open state: keep the controls compact (rules 1 & 4 would inflate them to
      16px / 40px) and give the stack a card surface so it reads as a popover the
      button raised, not as UI that just reappeared. */
-  html[data-ccm-branch="open"] .epitaxy-branch-row {
+  html[data-ccm-branch="open"] .epitaxy-branch-row,
+  html[data-ccm-branch="open"] nav[aria-label="Repository and pull request controls"] > div {
     padding: 4px 8px !important;
     border-radius: 10px !important;
     background: var(--cds-bg-100, rgba(128, 128, 128, 0.14)) !important;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28) !important;
   }
+  /* The compaction has to reach the new row too, or the open panel is the same
+     40-44px-per-control stack the hide rule was failing to suppress. min-height
+     alone is not enough on the new markup: the row itself carries min-h-[40px]. */
   .epitaxy-branch-row button,
   .epitaxy-branch-row [role="button"],
-  .epitaxy-branch-row a {
+  .epitaxy-branch-row a,
+  nav[aria-label="Repository and pull request controls"] button,
+  nav[aria-label="Repository and pull request controls"] [role="button"],
+  nav[aria-label="Repository and pull request controls"] a {
     min-height: 0 !important;
     font-size: 13px !important;
+  }
+  html[data-ccm-branch="open"] nav[aria-label="Repository and pull request controls"] > div {
+    min-height: 0 !important;
   }
 
   /* 8b. v1.131 - the button shows the aggregate diffstat rather than a branch
@@ -1206,7 +1247,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.148.0';
+  return '1.149.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -1478,6 +1519,19 @@ window.__ccmVer = (function () {
            <span class="sr-only">228 additions, 23 deletions</span>
            <span class="text-git-added">+228</span><span class="text-git-removed">−23</span>
 
+   v1.149 shape, read off a live in-session ccm-domdump (2026-09-07). Only the
+   diffstat spans and .epitaxy-branch-trailing survive; the row class and
+   .epitaxy-branch-leading are gone, and the nav gained an aria-label:
+
+     <nav aria-label="Repository and pull request controls" class="scroll-fade-y …">
+       <div class="… min-h-[40px] p-[8px] rounded-[10px] @container/branch-row">
+         <div class="flex-1 …">  button.epitaxy-branch-repo, branch button
+         <div class="epitaxy-branch-trailing contents">
+           <span class="sr-only">282 additions, 62 deletions</span>
+           <span class="text-git-added">+282</span><span class="text-git-removed">−62</span>
+           <div data-cds="SplitDropdownButton" aria-label="Create PR">  (+ "More PR options")
+           <button aria-label="Dismiss">                               <- new in this build
+
    "Only appear when there is a diff" is read off those two spans and requires a
    NON-ZERO total, not merely their presence - a session sitting on a clean
    branch still renders the row, and a button that says "details" for +0 −0 is
@@ -1515,7 +1569,16 @@ window.__ccmVer = (function () {
   // v1.146: same relabel as the kebab-relocation module above - scoped to the
   // title bar so the branch button can't anchor off a sidebar row's kebab.
   var KEBAB = '[aria-label^="Session actions"], [data-top-left="true"] [aria-label^="More options for "]';
-  var ROW = '.epitaxy-branch-row';
+  /* v1.149: the app dropped .epitaxy-branch-row, so this is a LIST, not a
+     string - the same append-never-replace discipline rule 8's CSS uses. Kept as
+     an array because diffStat() has to distribute a descendant selector across
+     every alternative; concatenating onto a comma-joined string would silently
+     produce '.a, nav > div .text-git-added' and only scope the LAST branch.
+     Losing this hook is not cosmetic: diffStat() read 0, so the title-bar chip
+     was never created and there was no way to open the rows at all - the panel
+     was unreachable at the same moment the rows stopped being hidden. */
+  var ROWS = ['.epitaxy-branch-row', 'nav[aria-label="Repository and pull request controls"] > div'];
+  var ROW = ROWS.join(', ');
   var BTN = '[data-ccm-branch-btn]';
 
   /* Added / removed lines summed across every repo row. total 0 (or no rows)
@@ -1525,7 +1588,8 @@ window.__ccmVer = (function () {
     var add = 0, del = 0;
     function sum(sel) {
       var n = 0;
-      Array.prototype.forEach.call(document.querySelectorAll(ROW + ' ' + sel), function (el) {
+      var q = ROWS.map(function (r) { return r + ' ' + sel; }).join(', ');
+      Array.prototype.forEach.call(document.querySelectorAll(q), function (el) {
         var d = (el.textContent || '').replace(/[^0-9]/g, '');
         if (d) n += parseInt(d, 10);
       });
