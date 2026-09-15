@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.150.0
+// @version      1.151.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1013,23 +1013,25 @@ window.__ccmStyleEl = GM_addStyle(`
      size, same colour, unreadable at arm's length.
 
      The companion (paintRows) stamps data-ccm-state on each recents row
-     wrapper [data-row] AND on its main button, plus data-ccm-pill (the label
-     text) on the button. States: running | unread | idle | offline. The same
-     two attributes go on the open session's title (header pill). Nothing here
-     rewrites an app node: dots are restyled in place and the label is a
+     wrapper [data-row] AND on its main button, plus data-ccm-age ("1m",
+     "22m", "1d") on the button. States: running | unread | idle | offline.
+     The open session's title gets data-ccm-state only (a small dot). Nothing
+     here rewrites an app node: dots are restyled in place and the age is a
      pseudo-element painted from the attribute, so React never sees a child
-     mutation. Hierarchy: only RUNNING is a filled chip (plus a tinted row);
-     unread, idle and offline are outline chips. Unread is near-universal on
-     Remote Control sessions (11 of 14 live rows on 2026-09-14), so a filled
-     amber chip drowned the green one; outlined it stays legible but quiet.
+     mutation. v1.151 (Ben 2026-09-15, on the v1.150 chips: "I don't think we
+     need the large chips though, just the color coding plus a small 1d 1m
+     etc"): colour carries the state, the age is small plain text in that
+     colour, and running rows show no age - the list API has no turn-start
+     time, and updated_at moves with every event, so any number there would
+     be invented. Running is still the emphasized row: pulsing dot, green
+     tint, bold title.
      Theme: the app themes by NESTED .cds-root[data-mode] nodes, and the
      sidebar root can disagree with html (measured: html light, .dframe-root
-     dark), so the tokens are declared on every [data-mode] node and each pill
+     dark), so the tokens are declared on every [data-mode] node and each mark
      inherits from its nearest themed ancestor. The idle token is repeated in
      both blocks so var(--cds-text-muted) resolves at that nested root. */
   html, [data-mode="light"] {
     --ccm-st-run: #15803d;
-    --ccm-st-run-fg: #ffffff;
     --ccm-st-new: #f59e0b;
     --ccm-st-new-text: #b45309;
     --ccm-st-off: #b91c1c;
@@ -1037,7 +1039,6 @@ window.__ccmStyleEl = GM_addStyle(`
   }
   [data-mode="dark"] {
     --ccm-st-run: #22c55e;
-    --ccm-st-run-fg: #052e16;
     --ccm-st-new: #f59e0b;
     --ccm-st-new-text: #fbbf24;
     --ccm-st-off: #f87171;
@@ -1092,43 +1093,57 @@ window.__ccmStyleEl = GM_addStyle(`
   [data-row][data-ccm-state="offline"] [data-row-label] {
     opacity: 0.6 !important;
   }
-  /* The pill. Row: right of the flex-1 title, clear of the always-visible
-     kebab (52px = its rendered 44px + 8px gap, see rule 30). Header: right of
-     the session title, which truncates first. */
-  [data-ccm-pill]::after {
-    content: attr(data-ccm-pill);
+  /* The age. Small plain text right of the flex-1 title, clear of the
+     always-visible kebab (52px = its rendered 44px + 8px gap, see rule 30).
+     Rows with no age (running, or nothing cached yet) still get the empty
+     box so every title stops at the same place before the kebab. */
+  [data-row-main-button][data-ccm-state]::after {
+    content: attr(data-ccm-age);
     flex: 0 0 auto;
-    margin-left: 8px;
-    padding: 0 7px;
-    border-radius: 999px;
-    border: 1px solid transparent;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 18px;
-    letter-spacing: 0.02em;
+    margin-left: 6px;
+    margin-right: 52px;
+    font-size: 12px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     pointer-events: none;
-  }
-  [data-row-main-button][data-ccm-pill]::after {
-    margin-right: 52px;
-  }
-  [data-ccm-pill][data-ccm-state="running"]::after {
-    background: var(--ccm-st-run);
-    color: var(--ccm-st-run-fg);
-  }
-  [data-ccm-pill][data-ccm-state="unread"]::after {
-    color: var(--ccm-st-new-text);
-    border-color: var(--ccm-st-new-text);
-  }
-  [data-ccm-pill][data-ccm-state="idle"]::after {
     color: var(--ccm-st-idle);
-    border-color: color-mix(in srgb, var(--ccm-st-idle) 60%, transparent);
   }
-  [data-ccm-pill][data-ccm-state="offline"]::after {
+  [data-row-main-button][data-ccm-state="unread"]::after {
+    color: var(--ccm-st-new-text);
+    font-weight: 600;
+  }
+  [data-row-main-button][data-ccm-state="offline"]::after {
     color: var(--ccm-st-off);
-    border-color: var(--ccm-st-off);
-    border-style: dashed;
+  }
+  /* The title now ends before the age, so rule 30's 44px fade (sized for a
+     title running under the kebab) only ate real characters. Keep a short
+     edge fade for titles that still overflow. */
+  [data-row][data-ccm-state].group:has([data-row-action]) .dframe-fade-label {
+    mask-image: linear-gradient(to right, black calc(100% - 14px), transparent 100%) !important;
+  }
+  /* Header: the open session's title gets a small dot in the state colour. */
+  [data-top-left="true"] [data-ccm-state]::after {
+    content: "";
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    margin-left: 6px;
+    border-radius: 50%;
+    box-sizing: border-box;
+    pointer-events: none;
+    border: 2px solid var(--ccm-st-idle);
+  }
+  [data-top-left="true"] [data-ccm-state="running"]::after {
+    background: var(--ccm-st-run);
+    border: 0;
+    animation: ccm-st-pulse 1.6s ease-out infinite;
+  }
+  [data-top-left="true"] [data-ccm-state="offline"]::after {
+    border: 2px dashed var(--ccm-st-off);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    [data-top-left="true"] [data-ccm-state="running"]::after { animation: none; }
   }
 
   /* 26. Side panel (plan / file / diff) full-width on phones. The detail panel
@@ -1277,7 +1292,7 @@ window.__ccmStyleEl = GM_addStyle(`
      - The title's .dframe-fade-label only applies its right-edge fade mask under
        group-hover, so pin that mask on too or the title runs under the now
        always-visible dots. Same 44px/20px stops the app uses itself.
-     - Rule 25b's state pill sits at the main button's right edge, i.e. exactly
+     - Rule 25b's age label sits at the main button's right edge, i.e. exactly
        under the kebab, so it reserves the control width (52px) to land to its
        left instead of behind it. 52px = the kebab's RENDERED width (44px) + an
        8px gap. Deliberately NOT calc(var(--df-row-ctl) + ...): that token is
@@ -1347,7 +1362,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.150.0';
+  return '1.151.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -4471,10 +4486,17 @@ window.__ccmVer = (function () {
           /^\s*[1-9]\d*\s+running tasks?\s*$/i.test(s)) { found = true; break; }
     }
     if (!found) return null;
-    var tl = document.querySelector('[data-top-left="true"]');
-    var header = tl ? tl.textContent : '';
-    if (!header) return null;
+    // v1.151: the title comes from the rename button's aria-label. The bar's
+    // textContent now opens with icon-font glyphs (measured 2026-09-15:
+    // "<title><repo>..."), so a prefix match on it never hit and
+    // the override silently stopped working.
     var map = statesCached();
+    var tb = document.querySelector('[data-top-left="true"] button[aria-label$=", rename session"]');
+    var exact = tb ? tb.getAttribute('aria-label').slice(0, -', rename session'.length) : '';
+    if (exact && map.hasOwnProperty(exact)) { domTaskMemo.name = exact; return exact; }
+    var tl = document.querySelector('[data-top-left="true"]');
+    var header = tl ? tl.textContent.replace(/^[-\s]+/, '') : '';
+    if (!header) return null;
     var best = null;
     for (var nm in map) {
       if (header.lastIndexOf(nm, 0) === 0 && (!best || nm.length > best.length)) best = nm;
@@ -4517,7 +4539,6 @@ window.__ccmVer = (function () {
     return m ? m[1] : null;
   }
   var ROW_SEL = 'a[data-row-main-button][href^="/code/session_"]';
-  var PILL = { running: 'Running', unread: 'Unread', idle: 'Idle', offline: 'Offline' };
   // Strongest signal first:
   //   running - the app's own dot says Running (bucket-driven server state,
   //             fresher than our <=45s cache), the open session's "N running
@@ -4546,13 +4567,15 @@ window.__ccmVer = (function () {
          !!a.querySelector('.status-dot[data-kind="ready"], .status-dot[data-kind="awaiting"]'));
     return unread ? 'unread' : 'idle';
   }
-  function pillText(state, e) {
-    var t = PILL[state];
-    if (state !== 'running' && e && e.t) t += ' ' + humanizeAge(Date.now() - e.t);
-    return t;
+  // Time since the last activity. None for running: updated_at moves with
+  // every event, so it is not "time since the turn started".
+  function ageText(state, e) {
+    return (state !== 'running' && e && e.t) ? humanizeAge(Date.now() - e.t) : null;
   }
   function stamp(el, attr, val) {
-    if (el && el.getAttribute(attr) !== val) el.setAttribute(attr, val);
+    if (!el) return;
+    if (val == null) { if (el.hasAttribute(attr)) el.removeAttribute(attr); }
+    else if (el.getAttribute(attr) !== val) el.setAttribute(attr, val);
   }
   function paintRows() {
     if (!window.matchMedia(MQ).matches) return;   // phone sheet only
@@ -4564,11 +4587,11 @@ window.__ccmVer = (function () {
       var st = rowState(a, dw);
       stamp(a.closest('[data-row]'), 'data-ccm-state', st);
       stamp(a, 'data-ccm-state', st);
-      stamp(a, 'data-ccm-pill', pillText(st, cache[sessionIdOf(a.getAttribute('href'))]));
+      stamp(a, 'data-ccm-age', ageText(st, cache[sessionIdOf(a.getAttribute('href'))]));
     }
     paintHeader(dw);
   }
-  // The open session's title gets the same pill. The drawer rows stay mounted
+  // The open session's title gets a state dot. The drawer rows stay mounted
   // while the sheet is closed (measured: 14 rows in-session), so the header
   // reuses its row's verdict; with no row it falls back to the cache alone.
   function paintHeader(dw) {
@@ -4577,8 +4600,7 @@ window.__ccmVer = (function () {
     if (!host) return;
     var id = sessionIdOf(location.pathname);
     if (!id) {
-      host.removeAttribute('data-ccm-state');
-      host.removeAttribute('data-ccm-pill');
+      stamp(host, 'data-ccm-state', null);
       return;
     }
     var e = rowsCached()[id];
@@ -4593,7 +4615,6 @@ window.__ccmVer = (function () {
     var g = document.querySelector('[data-testid="epitaxy-origin-gutter"]');
     if (st === 'offline' && g && /^Connected/.test(g.getAttribute('aria-label') || '')) st = 'idle';
     stamp(host, 'data-ccm-state', st);
-    stamp(host, 'data-ccm-pill', pillText(st, e));
   }
   window.__ccmPaintRows = paintRows;
 
