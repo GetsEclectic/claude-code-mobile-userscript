@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.149.0
+// @version      1.150.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -993,39 +993,142 @@ window.__ccmStyleEl = GM_addStyle(`
     pointer-events: none;
   }
 
-  /* 25. Wider recents drawer + per-row idle-age label. The open drawer panel is
-     .dframe-sidebar-body; its width resolves from --df-sidebar-width, but that
-     var is set locally (not on .dframe-root), so overriding the var at the root
-     doesn't reach it (verified 2026-05-31: var flipped to 360 yet the panel
-     stayed 280). We instead override the panel's width directly — proven to take
-     it 280px -> 360px — with a 92vw cap so it never runs off a narrow phone. The
-     companion JS appends a .ccm-idle-age <span> to each idle row's main button
-     (right of the flex-1 title) showing how long the session has been idle
-     (humanized from updated_at); it's muted and shrink-proof so the title
-     truncates first. */
+  /* 25. Wider recents drawer. The open drawer panel is .dframe-sidebar-body; its
+     width resolves from --df-sidebar-width, but that var is set locally (not on
+     .dframe-root), so overriding the var at the root doesn't reach it (verified
+     2026-05-31: var flipped to 360 yet the panel stayed 280). We instead
+     override the panel's width directly - proven to take it 280px -> 360px -
+     with a 92vw cap so it never runs off a narrow phone. */
   .dframe-sidebar-body {
     width: 360px !important;
     max-width: 92vw !important;
   }
-  [data-row-main-button] .ccm-idle-age {
-    flex: 0 0 auto !important;
-    margin-left: auto !important;
-    padding-left: 8px !important;
-    font-size: 12px !important;
-    font-variant-numeric: tabular-nums !important;
-    color: var(--text-300, #9b9b9b) !important;
-    opacity: 0.8 !important;
-    white-space: nowrap !important;
-    pointer-events: none !important;
+
+  /* 25b. Session state at a glance (v1.150, replaces the v1.71 grey idle-age
+     label). Ben 2026-09-14: "very clear indication for sessions that are active
+     and sessions that are idle". Measured on the phone (app build 3445de0a06):
+     the app draws a RUNNING row as a 6px muted-grey blinking dot
+     (span role=status aria-label Running > .status-dot) and an IDLE row as a
+     6px muted-grey ring at 50% opacity (span role=img aria-label Idle) - same
+     size, same colour, unreadable at arm's length.
+
+     The companion (paintRows) stamps data-ccm-state on each recents row
+     wrapper [data-row] AND on its main button, plus data-ccm-pill (the label
+     text) on the button. States: running | unread | idle | offline. The same
+     two attributes go on the open session's title (header pill). Nothing here
+     rewrites an app node: dots are restyled in place and the label is a
+     pseudo-element painted from the attribute, so React never sees a child
+     mutation. Hierarchy: only RUNNING is a filled chip (plus a tinted row);
+     unread, idle and offline are outline chips. Unread is near-universal on
+     Remote Control sessions (11 of 14 live rows on 2026-09-14), so a filled
+     amber chip drowned the green one; outlined it stays legible but quiet.
+     Theme: the app themes by NESTED .cds-root[data-mode] nodes, and the
+     sidebar root can disagree with html (measured: html light, .dframe-root
+     dark), so the tokens are declared on every [data-mode] node and each pill
+     inherits from its nearest themed ancestor. The idle token is repeated in
+     both blocks so var(--cds-text-muted) resolves at that nested root. */
+  html, [data-mode="light"] {
+    --ccm-st-run: #15803d;
+    --ccm-st-run-fg: #ffffff;
+    --ccm-st-new: #f59e0b;
+    --ccm-st-new-text: #b45309;
+    --ccm-st-off: #b91c1c;
+    --ccm-st-idle: var(--cds-text-muted, #898781);
   }
-  /* 25b. Waiting row the API marks unread (finished/blocked with output Ben
-     hasn't viewed yet): the idle-age label goes amber + bold, matching the
-     rule-23 badge, so "done and unseen" pops against already-reviewed rows,
-     which keep the muted grey above. Amber reads on both dark and light. */
-  [data-row-main-button] .ccm-idle-age.ccm-unread {
-    color: #d97706 !important;
-    font-weight: 700 !important;
+  [data-mode="dark"] {
+    --ccm-st-run: #22c55e;
+    --ccm-st-run-fg: #052e16;
+    --ccm-st-new: #f59e0b;
+    --ccm-st-new-text: #fbbf24;
+    --ccm-st-off: #f87171;
+    --ccm-st-idle: var(--cds-text-muted, #898781);
+  }
+  /* The leading dot: 10px, colour-coded, never the app's 50% opacity. */
+  [data-row][data-ccm-state] .df-leading-slot > [aria-label] > span {
+    width: 10px !important;
+    height: 10px !important;
+    min-width: 10px !important;
+    border-radius: 50% !important;
+    box-sizing: border-box !important;
     opacity: 1 !important;
+    animation: none !important;
+  }
+  [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
+    background: var(--ccm-st-run) !important;
+    border: 0 !important;
+    animation: ccm-st-pulse 1.6s ease-out infinite !important;
+  }
+  [data-row][data-ccm-state="unread"] .df-leading-slot > [aria-label] > span {
+    background: var(--ccm-st-new) !important;
+    border: 0 !important;
+  }
+  [data-row][data-ccm-state="idle"] .df-leading-slot > [aria-label] > span {
+    background: transparent !important;
+    border: 2px solid var(--ccm-st-idle) !important;
+  }
+  [data-row][data-ccm-state="offline"] .df-leading-slot > [aria-label] > span {
+    background: transparent !important;
+    border: 2px dashed var(--ccm-st-off) !important;
+  }
+  @keyframes ccm-st-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ccm-st-run) 70%, transparent); }
+    100% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--ccm-st-run) 0%, transparent); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
+      animation: none !important;
+    }
+  }
+  /* Running rows are the emphasized ones: green tint and a bold primary title.
+     The tint is an inset shadow, not a background, so the app's own
+     selected-row background still shows underneath it. Offline rows fade. */
+  [data-row][data-ccm-state="running"] {
+    box-shadow: inset 0 0 0 100vmax color-mix(in srgb, var(--ccm-st-run) 16%, transparent) !important;
+  }
+  [data-row][data-ccm-state="running"] [data-row-label] {
+    color: var(--cds-text-primary, currentColor) !important;
+    font-weight: 600 !important;
+  }
+  [data-row][data-ccm-state="offline"] [data-row-label] {
+    opacity: 0.6 !important;
+  }
+  /* The pill. Row: right of the flex-1 title, clear of the always-visible
+     kebab (52px = its rendered 44px + 8px gap, see rule 30). Header: right of
+     the session title, which truncates first. */
+  [data-ccm-pill]::after {
+    content: attr(data-ccm-pill);
+    flex: 0 0 auto;
+    margin-left: 8px;
+    padding: 0 7px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 18px;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  [data-row-main-button][data-ccm-pill]::after {
+    margin-right: 52px;
+  }
+  [data-ccm-pill][data-ccm-state="running"]::after {
+    background: var(--ccm-st-run);
+    color: var(--ccm-st-run-fg);
+  }
+  [data-ccm-pill][data-ccm-state="unread"]::after {
+    color: var(--ccm-st-new-text);
+    border-color: var(--ccm-st-new-text);
+  }
+  [data-ccm-pill][data-ccm-state="idle"]::after {
+    color: var(--ccm-st-idle);
+    border-color: color-mix(in srgb, var(--ccm-st-idle) 60%, transparent);
+  }
+  [data-ccm-pill][data-ccm-state="offline"]::after {
+    color: var(--ccm-st-off);
+    border-color: var(--ccm-st-off);
+    border-style: dashed;
   }
 
   /* 26. Side panel (plan / file / diff) full-width on phones. The detail panel
@@ -1174,9 +1277,14 @@ window.__ccmStyleEl = GM_addStyle(`
      - The title's .dframe-fade-label only applies its right-edge fade mask under
        group-hover, so pin that mask on too or the title runs under the now
        always-visible dots. Same 44px/20px stops the app uses itself.
-     - Rule 25's .ccm-idle-age sits at the main button's right edge
-       (margin-left:auto), i.e. exactly under the kebab. Reserve the control
-       width so the age label lands to its left instead of behind it. */
+     - Rule 25b's state pill sits at the main button's right edge, i.e. exactly
+       under the kebab, so it reserves the control width (52px) to land to its
+       left instead of behind it. 52px = the kebab's RENDERED width (44px) + an
+       8px gap. Deliberately NOT calc(var(--df-row-ctl) + ...): that token is
+       24px in the drawer, and the button only measures 44px because rule 10
+       inflates every control to a 44px tap target - trusting the token
+       reserved 28px and left the label still 18px under the dots (measured
+       2026-08-20). */
   div:has(> [data-row-action]) {
     opacity: 1 !important;
     pointer-events: auto !important;
@@ -1187,14 +1295,6 @@ window.__ccmStyleEl = GM_addStyle(`
       black calc(100% - 44px),
       transparent calc(100% - 20px)
     ) !important;
-  }
-  [data-row-main-button] .ccm-idle-age {
-    /* 52px = the kebab's RENDERED width (44px) + a 8px gap. Deliberately NOT
-       calc(var(--df-row-ctl) + ...): that token is 24px in the drawer, and the
-       button only measures 44px because rule 10 inflates every control to a
-       44px tap target - trusting the token reserved 28px and left the label
-       still 18px under the dots (measured 2026-08-20). */
-    margin-right: 52px !important;
   }
 }
 `);
@@ -1247,7 +1347,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.149.0';
+  return '1.150.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -4231,20 +4331,6 @@ window.__ccmVer = (function () {
     return state === 'ready' || state === 'awaiting';
   }
 
-  // Given the app's per-session status <span role="status">, climb to the row
-  // and read the session name off its "More options for <name>" button. The
-  // first ancestor that owns such a button is the row itself (the status span
-  // and the button are siblings within it), so this never crosses into a
-  // neighbouring row.
-  function rowName(statusEl) {
-    var n = statusEl;
-    for (var d = 0; d < 6 && n; d++, n = n.parentElement) {
-      var btn = n.querySelector('[aria-label^="More options for "]');
-      if (btn) return btn.getAttribute('aria-label').slice(17); // len('More options for ')
-    }
-    return null;
-  }
-
   function cached() {
     var v;
     try { v = parseInt(localStorage.getItem(KEY), 10); } catch (e) { v = NaN; }
@@ -4355,43 +4441,8 @@ window.__ccmVer = (function () {
     return Math.floor(h / 24) + 'd';
   }
 
-  // The exact markup the app draws for each dot state, so an injected dot is
-  // byte-identical to the native ones - colour/animation come from the app's
-  // own global classes (.status-dot[data-kind]). Recaptured live 2026-07-11:
-  // list rows now render working as a STATIC status-dot[data-kind="running"]
-  // (aria "Running"), not the old dframe triple.
-  // data-ccm marks a dot WE injected, so the downgrade guard below can tell
-  // an app-drawn running dot (trusted, fresher than our cache) from our own
-  // (ours must stay downgradeable when the state moves on). Inert attribute -
-  // the app styles purely off .status-dot[data-kind].
-  var DOT = {
-    working:  { aria: 'Running',        html: '<span class="status-dot" data-ccm="1" data-kind="running"></span>' },
-    ready:    { aria: 'Ready',          html: '<span class="status-dot" data-ccm="1" data-kind="ready"></span>' },
-    awaiting: { aria: 'Awaiting input', html: '<span class="status-dot" data-ccm="1" data-kind="awaiting"></span>' },
-  };
-  // Which state is a status span currently rendering? The legacy dframe
-  // triple (pre-2026-07 app markup, still possible mid-turn) also means
-  // working.
-  function dotState(el) {
-    if (el.querySelector('.dframe-dot')) return 'working';
-    var sd = el.querySelector('.status-dot');
-    if (sd) {
-      var k = sd.getAttribute('data-kind');
-      if (k === 'running') return 'working';
-      if (k === 'awaiting' || k === 'ready') return k;
-    }
-    return null;
-  }
-  // App-drawn STATIC running dot (the new bucket-driven markup, not one we
-  // injected ourselves)? Server state fresher than our <=45s-old cache -
-  // never downgrade it. Legacy dframe animations are client-side and can go
-  // stale after a turn ends, so those still downgrade (the v1.102 fix), as
-  // do our own injected dots.
-  function isAppRunningDot(el) {
-    var sd = el.querySelector('.status-dot');
-    return !!sd && sd.getAttribute('data-kind') === 'running' &&
-           !sd.hasAttribute('data-ccm');
-  }
+  // Session states the badge map records (null = archived/pending, skipped).
+  var STATE_OK = { working: 1, ready: 1, awaiting: 1 };
   // v1.104: the app's own "N running task(s)" indicator, rendered inside the
   // OPEN session view, is the one authoritative live background-task signal
   // (computed client-side from the event log; the list API exposes nothing -
@@ -4432,84 +4483,119 @@ window.__ccmVer = (function () {
     return best;
   }
 
-  // Reconcile each recents status dot to the session's TRUE state (cached map).
-  // Bidirectional: we DOWNGRADE a stale "Running" dot to ready/awaiting when a
-  // turn has actually ended, and UPGRADE an idle/ready dot to "Running" when
-  // background work is live. Idempotent - we only rewrite when the rendered
-  // state differs from the desired one, so we never fight a correct app dot.
-  function paintDots() {
+  // v1.150 - session state at a glance (Ben 2026-09-14: "very clear
+  // indication for sessions that are active and sessions that are idle").
+  // CSS rule 25b has the measured app markup and why its own 6px dots are
+  // unreadable. paintRows derives ONE state per recents row and stamps
+  // attributes; the stylesheet draws everything. It never rewrites an app
+  // node: the pre-v1.150 paintDots swapped innerHTML + aria-label on every
+  // span[role=status] whose 6-level climb found a "More options for" button,
+  // and in-session that climb reached the header's button, so it was also
+  // rewriting the app's own sr-only live regions to "Running" (measured on
+  // the phone 2026-09-14). It could not see idle rows at all either: the app
+  // now draws those as span[role=img][aria-label=Idle], not role=status.
+  var RKEY = 'ccmSessionRows';  // session id -> {s, g: bg override, u: unread, o: offline, t: updated_at ms}
+  var rowsRaw = null;
+  var rowsObj = {};
+  function rowsCached() {
+    var raw = null;
+    try { raw = localStorage.getItem(RKEY); } catch (e) {}
+    if (raw !== rowsRaw) {          // parse only when the poll wrote something new
+      rowsRaw = raw;
+      try { rowsObj = JSON.parse(raw) || {}; } catch (e) { rowsObj = {}; }
+    }
+    return rowsObj;
+  }
+  // A Remote Control session whose CLI is gone. Cloud sessions also report
+  // "disconnected" whenever their container sleeps, which is ordinary idle
+  // (sending a message wakes them), so only a bridge session reads offline.
+  function isOffline(s) {
+    return !!s && s.environment_kind === 'bridge' && s.connection_status === 'disconnected';
+  }
+  function sessionIdOf(path) {
+    var m = /^\/code\/(session_[A-Za-z0-9]+)/.exec(path || '');
+    return m ? m[1] : null;
+  }
+  var ROW_SEL = 'a[data-row-main-button][href^="/code/session_"]';
+  var PILL = { running: 'Running', unread: 'Unread', idle: 'Idle', offline: 'Offline' };
+  // Strongest signal first:
+  //   running - the app's own dot says Running (bucket-driven server state,
+  //             fresher than our <=45s cache), the open session's "N running
+  //             tasks" indicator names this row, or the v1.104 flip-baseline
+  //             override holds it working after the bucket already said done
+  //             (g). A plain cached working bucket is NOT enough: the app's dot
+  //             reflects that same bucket live, and our copy can be 45s stale.
+  //   offline - Remote Control session disconnected (API).
+  //   unread  - turn finished, output not viewed (API; the app's legacy
+  //             ready/awaiting dot when we hold no cache entry yet).
+  //   idle    - everything else.
+  function rowState(a, dw) {
+    var e = rowsCached()[sessionIdOf(a.getAttribute('href'))];
+    var lead = a.querySelector('.df-leading-slot > [aria-label]');
+    var aria = (lead && lead.getAttribute('aria-label')) || '';
+    if (/^Running/.test(aria) ||
+        a.querySelector('.status-dot[data-kind="running"], .dframe-dot')) return 'running';
+    if (dw) {
+      var lbl = a.querySelector('[data-row-label]');
+      if (lbl && lbl.textContent.trim() === dw) return 'running';
+    }
+    if (e && e.o) return 'offline';
+    if (e && e.g) return 'running';
+    var unread = e ? !!e.u
+      : (/^Unread/.test(aria) ||
+         !!a.querySelector('.status-dot[data-kind="ready"], .status-dot[data-kind="awaiting"]'));
+    return unread ? 'unread' : 'idle';
+  }
+  function pillText(state, e) {
+    var t = PILL[state];
+    if (state !== 'running' && e && e.t) t += ' ' + humanizeAge(Date.now() - e.t);
+    return t;
+  }
+  function stamp(el, attr, val) {
+    if (el && el.getAttribute(attr) !== val) el.setAttribute(attr, val);
+  }
+  function paintRows() {
     if (!window.matchMedia(MQ).matches) return;   // phone sheet only
-    var map = statesCached();
     var dw = domWorkingName();
-    var dots = document.querySelectorAll('span[role="status"]');
-    for (var i = 0; i < dots.length; i++) {
-      var el = dots[i];
-      var name = rowName(el);
-      if (!name) continue;                  // sr-only / unlabelled status spans
-      var want = (dw && name === dw) ? 'working' : map[name];
-      if (!want || !DOT[want]) continue;    // no opinion on this session
-      if (dotState(el) === want) continue;  // already correct
-      // Never fight the app's own bucket-driven static running dot - it is
-      // fresher server state than our cache (v1.104).
-      if (want !== 'working' && isAppRunningDot(el)) continue;
-      el.setAttribute('aria-label', DOT[want].aria);
-      el.innerHTML = DOT[want].html;
+    var cache = rowsCached();
+    var rows = document.querySelectorAll(ROW_SEL);
+    for (var i = 0; i < rows.length; i++) {
+      var a = rows[i];
+      var st = rowState(a, dw);
+      stamp(a.closest('[data-row]'), 'data-ccm-state', st);
+      stamp(a, 'data-ccm-state', st);
+      stamp(a, 'data-ccm-pill', pillText(st, cache[sessionIdOf(a.getAttribute('href'))]));
     }
+    paintHeader(dw);
   }
-
-  // The status span sits inside the row's main button (in the leading slot), so
-  // climbing from the dot reaches the button — where the idle-age label hangs,
-  // right of the flex-1 title. Handles both "the button is an ancestor" and
-  // "the button is a descendant of a row ancestor" shapes defensively.
-  function rowMainButton(statusEl) {
-    var n = statusEl;
-    for (var d = 0; d < 6 && n; d++, n = n.parentElement) {
-      if (n.hasAttribute && n.hasAttribute('data-row-main-button')) return n;
-      var b = n.querySelector && n.querySelector('[data-row-main-button]');
-      if (b) return b;
+  // The open session's title gets the same pill. The drawer rows stay mounted
+  // while the sheet is closed (measured: 14 rows in-session), so the header
+  // reuses its row's verdict; with no row it falls back to the cache alone.
+  function paintHeader(dw) {
+    var title = document.querySelector('[data-top-left="true"] button[aria-label$=", rename session"]');
+    var host = title && title.parentElement;
+    if (!host) return;
+    var id = sessionIdOf(location.pathname);
+    if (!id) {
+      host.removeAttribute('data-ccm-state');
+      host.removeAttribute('data-ccm-pill');
+      return;
     }
-    return null;
+    var e = rowsCached()[id];
+    var row = document.querySelector('a[data-row-main-button][href="/code/' + id + '"]');
+    var st = row ? rowState(row, dw)
+      : dw ? 'running'
+      : (e && e.o) ? 'offline'
+      : (e && e.g) ? 'running' : 'idle';
+    if (st === 'unread') st = 'idle';   // Ben is looking at it
+    // The app's own origin button reads "Connected via Remote Control" for a
+    // live bridge; it is fresher than our poll, so it vetoes a stale offline.
+    var g = document.querySelector('[data-testid="epitaxy-origin-gutter"]');
+    if (st === 'offline' && g && /^Connected/.test(g.getAttribute('aria-label') || '')) st = 'idle';
+    stamp(host, 'data-ccm-state', st);
+    stamp(host, 'data-ccm-pill', pillText(st, e));
   }
-  // Stamp each waiting (ready/awaiting) recents row with how long it's been idle,
-  // computed live from the cached updated_at so it ticks up between refreshes.
-  // Working rows (and any without a known timestamp) get no label, and a row
-  // that transitions back to working has its stale label removed. Idempotent:
-  // we only touch the DOM when the text actually changes.
-  function paintAges() {
-    if (!window.matchMedia(MQ).matches) return;   // phone sheet only
-    var map = statesCached();
-    var ages = agesCached();
-    var unread = unreadCached();
-    var dw = domWorkingName();   // v1.104: live bg task => not idle, no label
-    var dots = document.querySelectorAll('span[role="status"]');
-    for (var i = 0; i < dots.length; i++) {
-      var el = dots[i];
-      var name = rowName(el);
-      if (!name) continue;
-      var btn = rowMainButton(el);
-      if (!btn) continue;
-      var lbl = btn.querySelector('.ccm-idle-age');
-      var state = (dw && name === dw) ? 'working' : map[name];
-      var ts = ages[name];
-      if ((state === 'ready' || state === 'awaiting') && ts) {
-        var text = humanizeAge(Date.now() - ts);
-        if (!lbl) {
-          lbl = document.createElement('span');
-          lbl.className = 'ccm-idle-age';
-          btn.appendChild(lbl);
-        }
-        if (lbl.textContent !== text) lbl.textContent = text;
-        // Waiting AND unread => amber/bold label ("done and you haven't
-        // looked"); already-viewed waiting rows keep the muted grey.
-        var wantUnread = !!unread[name];
-        if (lbl.classList.contains('ccm-unread') !== wantUnread) {
-          lbl.classList.toggle('ccm-unread', wantUnread);
-        }
-      } else if (lbl) {
-        lbl.remove();
-      }
-    }
-  }
+  window.__ccmPaintRows = paintRows;
 
   // Fetch the session list and recompute the cached count. On any failure
   // (no org yet, network, non-200, bad JSON) we leave the cache untouched so
@@ -4534,6 +4620,7 @@ window.__ccmVer = (function () {
       var map = {};
       var ages = {};
       var unread = {};
+      var rowsNext = {};   // v1.150 id-keyed row states (paintRows)
       var prev = prevCached();
       var nextPrev = {};   // rebuilt each poll => prunes archived/deleted rows
       var nav = [];        // v1.113 swipe order, sorted below
@@ -4544,15 +4631,24 @@ window.__ccmVer = (function () {
         var pe = nm ? prev[nm] : null;
         var state = sessionState(s, pe, nowMs);
         if (isWaitingState(state)) n++;
-        // Record every actionable state (working/ready/awaiting) so paintDots
+        // Record every actionable state (working/ready/awaiting) for the badge
         // can both upgrade and downgrade. null (archived/deleted/pending) stays
         // out of the map so those rows are left exactly as the app drew them.
-        if (nm && DOT[state]) map[nm] = state;
-        // Cache the last-active timestamp so paintAges can show a live idle age,
+        if (nm && STATE_OK[state]) map[nm] = state;
+        // Cache the last-active timestamp (idle ages),
         // the unread flag so it can highlight not-yet-viewed waiting rows, and
         // the {ts, bucket, advance} history the bg-activity override needs.
         var ts = lastActive(s);
         if (nm && !isNaN(ts)) ages[nm] = ts;
+        if (s.id && state) {
+          rowsNext[s.id] = {
+            s: state,
+            g: (state === 'working' && s.status_bucket !== 'working') ? 1 : 0,
+            u: s.unread ? 1 : 0,
+            o: isOffline(s) ? 1 : 0,
+            t: isNaN(ts) ? 0 : ts,
+          };
+        }
         if (nm && isWaitingState(state) && s.unread) unread[nm] = 1;
         if (nm && state) nextPrev[nm] = sessionPrevEntry(s, pe, nowMs);
         // Swipe order (v1.113). state===null is exactly the archived/deleted/
@@ -4569,11 +4665,11 @@ window.__ccmVer = (function () {
       try { localStorage.setItem(MKEY, JSON.stringify(map)); } catch (e) {}
       try { localStorage.setItem(AKEY, JSON.stringify(ages)); } catch (e) {}
       try { localStorage.setItem(UKEY, JSON.stringify(unread)); } catch (e) {}
+      try { localStorage.setItem(RKEY, JSON.stringify(rowsNext)); } catch (e) {}
       try { localStorage.setItem(PKEY, JSON.stringify(nextPrev)); } catch (e) {}
       if (nav.length) { try { localStorage.setItem(NKEY, JSON.stringify(nav)); } catch (e) {} }
       paint();
-      paintDots();
-      paintAges();
+      paintRows();
     }).catch(function () {});
   }
 
@@ -4581,7 +4677,7 @@ window.__ccmVer = (function () {
   function schedule() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(function () { pending = false; paint(); paintDots(); paintAges(); });
+    requestAnimationFrame(function () { pending = false; paint(); paintRows(); });
   }
   new MutationObserver(schedule).observe(document.documentElement, {
     childList: true, subtree: true,
@@ -4595,13 +4691,12 @@ window.__ccmVer = (function () {
   window.__ccmNavRefresh = refresh;
 
   paint();        // instant: show the cached count
-  paintDots();    // instant: fix dots from the cached map
-  paintAges();    // instant: stamp idle ages from the cached timestamps
+  paintRows();    // instant: row + header state from the cached map
   refresh();      // then reconcile against the API
   setInterval(refresh, POLL_MS);
-  // Ages tick up over time even when nothing mutates (a drawer left open has
-  // no DOM churn, so the MutationObserver alone would freeze the labels).
-  setInterval(paintAges, 30000);
+  // Pill ages tick up over time even when nothing mutates (a drawer left
+  // open has no DOM churn, so the MutationObserver alone would freeze them).
+  setInterval(paintRows, 30000);
   window.addEventListener('focus', refresh);
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') refresh();
