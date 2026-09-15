@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.151.0
+// @version      1.152.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -676,10 +676,17 @@ window.__ccmStyleEl = GM_addStyle(`
     padding-top: 1px !important;
     padding-bottom: 1px !important;
   }
+  /* v1.152: the 2026-09-15 composer rebuild moved this toolbar into
+     div[data-cds="ChatComposerChin"] and neither dock class exists any more, so
+     rules 1 and 4 were inflating Bypass permissions / model / effort to 16px and
+     40px tall - larger than stock (12px, 20px), not merely un-compacted. Keyed on
+     the data-cds hook; the class-based selectors stay for older builds. */
   .epitaxy-composer-width [class*="py-[4px]"] button,
   .epitaxy-composer-width [class*="py-[4px]"] [role="button"],
   .epitaxy-composer-band [class*="py-[4px]"] button,
-  .epitaxy-composer-band [class*="py-[4px]"] [role="button"] {
+  .epitaxy-composer-band [class*="py-[4px]"] [role="button"],
+  [data-cds="ChatComposerChin"] button,
+  [data-cds="ChatComposerChin"] [role="button"] {
     min-height: 0 !important;
     font-size: 13px !important;
   }
@@ -699,14 +706,26 @@ window.__ccmStyleEl = GM_addStyle(`
      .btn-squish -> .cds-btn-squish (48 of the new name vs 1 of the old in a live
      in-session dump), which is what dropped the coral off Send/Stop. Both listed;
      rule 24's steer cue below needs the same pair. */
+  /* v1.152: the 2026-09-15 composer rebuild (app build 01e9a5dc54) dropped the
+     .self-end send slot entirely - Send now sits in div[data-cds="ChatComposerActions"]
+     (display:contents over an absolute bottom-right box), so every .self-end
+     selector here matched zero nodes and Send went back to a plain grey glyph.
+     Keyed on the data-cds hook plus the button's own aria-label, so a future
+     wrapper change or an extra control in that slot (a split dropdown) is not
+     painted coral by accident. The old selectors stay for older builds. */
   .epitaxy-prompt .self-end button .btn-squish,
-  .epitaxy-prompt .self-end button .cds-btn-squish {
+  .epitaxy-prompt .self-end button .cds-btn-squish,
+  [data-cds="ChatComposerActions"] button[aria-label="Send"] .cds-btn-squish,
+  [data-cds="ChatComposerActions"] button[aria-label="Stop"] .cds-btn-squish {
     background: #d97757 !important;
   }
-  .epitaxy-prompt .self-end button {
+  .epitaxy-prompt .self-end button,
+  [data-cds="ChatComposerActions"] button[aria-label="Send"],
+  [data-cds="ChatComposerActions"] button[aria-label="Stop"] {
     color: #fff !important;
   }
-  .epitaxy-prompt .self-end button:disabled {
+  .epitaxy-prompt .self-end button:disabled,
+  [data-cds="ChatComposerActions"] button[aria-label="Send"]:disabled {
     opacity: 0.45 !important;
   }
 
@@ -803,6 +822,39 @@ window.__ccmStyleEl = GM_addStyle(`
   }
   .epitaxy-prompt .relative.flex.w-full {
     gap: 0 !important;
+  }
+  /* 18c. The 2026-09-15 composer rebuild (app build 01e9a5dc54) has no flex input
+     row any more. .epitaxy-prompt-input is now the ChatComposerEditor wrapper
+     inside a plain block that also holds the absolutely-positioned placeholder,
+     so inserting the proxy beside it (the pre-rebuild path) put the + on a line
+     of its own, drawn over "Type / for commands", with the text pushed below it
+     (measured on Ben's phone: + at y=786, editor at y=817, overlap with the
+     placeholder true). The app lays out Send the same way the + should go: an
+     absolute box pinned bottom-right of the div that carries --cmp-lead-w and
+     --cmp-trail-w, with the text wrapper padded right by --cmp-trail-w. So the
+     companion mounts the proxy as the first child of that same div and this rule
+     mirrors Send on the left - pinned bottom-left, vertically centred on the
+     single-line row height - and pads the text wrapper by the proxy's 30px plus
+     Send's 6px gap. The text wrapper is the one child without a data-cds hook
+     (the other is ChatComposerActions), which keeps this off any class name.
+     The offset clamps at 0: in compact density the row (26.4px measured) is
+     shorter than the 30px buttons, the Send box grows to 30px and sits on the
+     bottom edge, and an unclamped negative offset left the + 3px below Send. */
+  [data-cds="ChatComposer"] #ccm-add-proxy {
+    position: absolute !important;
+    left: 0 !important;
+    bottom: max(0px, calc((var(--cmp-row-h, 30px) - 30px) / 2)) !important;
+    margin: 0 !important;
+    z-index: 1 !important;
+  }
+  /* The wrapper carries the app's own 200ms transition on padding-left/right/
+     bottom, so the 36px lead animated in from 0 on every composer mount - the
+     text visibly slid right on each session switch (measured: 0px at mount,
+     3px one frame later, 36px after the transition). Drop padding-left from
+     the transition only; the app's right/bottom animations stay. */
+  [data-cds="ChatComposer"] div:has(> #ccm-add-proxy) > div:not([data-cds]) {
+    padding-left: 36px !important;
+    transition-property: padding-right, padding-bottom !important;
   }
 
   /* 19. Popup-menu rows — the session-actions dropdown (Open in / Rename / Color
@@ -1362,7 +1414,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.151.0';
+  return '1.152.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -2882,12 +2934,28 @@ window.__ccmVer = (function () {
   }
   function sync() {
     try {
-      var input = document.querySelector('.epitaxy-prompt-input');
-      var row = input && input.parentElement; // div.relative.flex.w-full
+      // 2026-09-15 composer rebuild (data-cds="ChatComposer"): there is no flex
+      // input row; the editor sits in a plain block under an absolute
+      // placeholder, so mounting beside it stacked the + over the placeholder.
+      // Mount instead into the ancestor that also hosts ChatComposerActions (the
+      // absolutely-positioned Send box); rule 18c pins the + bottom-left there.
+      var cdsEditor = document.querySelector('[data-cds="ChatComposer"] [data-cds="ChatComposerEditor"]');
+      var input = cdsEditor || document.querySelector('.epitaxy-prompt-input');
+      var row = null;
+      if (cdsEditor) {
+        for (var a = cdsEditor.parentElement; a && a.getAttribute('data-cds') !== 'ChatComposer'; a = a.parentElement) {
+          if (a.querySelector(':scope > [data-cds="ChatComposerActions"]')) { row = a; break; }
+        }
+      } else {
+        row = input && input.parentElement; // div.relative.flex.w-full (pre-rebuild)
+      }
       var real = realAdd();
       var proxy = document.getElementById(PROXY_ID);
       if (!input || !row || !real) {
         if (proxy) proxy.remove(); // no composer right now — drop a stale proxy
+        // Un-hide the real + so a future restructure that defeats the mount
+        // leaves the stock attach button usable instead of no + at all.
+        if (real) real.removeAttribute('data-ccm-realadd');
         return;
       }
       real.setAttribute('data-ccm-realadd', '1'); // rule 18b hides this toolbar one
