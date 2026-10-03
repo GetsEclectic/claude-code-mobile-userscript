@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.152.0
+// @version      1.153.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,13 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.153: tapping the composer "+" with the soft keyboard up no longer opens the
+   attach menu at the keyboard-up position and then flings it down. The tap moves
+   focus off the composer (the keyboard closes and the viewport grows ~336px about
+   35ms after the click), and the menu, anchored once at open, jumped with it
+   (measured on a real Gboard in Chromium: menu top 299 -> 636). The proxy now
+   waits for the keyboard to finish closing and only then forwards the click.
 
    v1.149: re-hide the repo / PR bar above the composer. claude.ai dropped the
    .epitaxy-branch-row class both rule 8 and the ccmBranch module keyed on, so the
@@ -1414,7 +1421,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.152.0';
+  return '1.153.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -2932,6 +2939,65 @@ window.__ccmVer = (function () {
     }
     return null;
   }
+  /* v1.153: open the attach menu only AFTER the soft keyboard has finished closing.
+
+     With the keyboard up, the tap on this button takes focus off the composer, so
+     the keyboard starts closing; the click we forward opens the app's menu (a Base
+     UI popover that also takes focus into itself, so the keyboard would close even
+     if the button kept focus). The menu is positioned ONCE, against the toolbar
+     "+" at the keyboard-up layout, and the keyboard finishes closing ~35ms later:
+     the viewport grows ~336px (interactive-widget=resizes-content), the composer
+     drops to the bottom and the menu is re-anchored under the finger. Measured on a
+     real Gboard in Chromium: menu top 299 -> 636 in 20ms.
+
+     Keeping the keyboard up instead is not possible from here: the menu takes focus
+     on open and a focused non-editable element closes the IME, and handing focus
+     back to the composer would make the menu's focus-out dismiss close it. So close
+     the keyboard first - blur the composer ourselves, wait for the viewport to
+     reach its keyboard-down height (visualViewport 'resize', bounded by SETTLE_MAX
+     so a missing event can never eat the tap), then forward the click: the menu
+     opens once, in its final place. Plain DOM + visualViewport events only, so it
+     behaves the same in the K4y WebView (main world) and in a Violentmonkey sandbox.
+     When no keyboard is up (kbOpen() false) the click is forwarded synchronously,
+     exactly as before. */
+  var KB_MIN = 120;      // px of viewport shrink that counts as a soft keyboard
+  var SETTLE_MAX = 700;  // ms: give up waiting and forward anyway
+  var waiting = false;
+  function kbOpen() {
+    var vv = window.visualViewport;
+    if (!vv || window.innerWidth > 900) return false;
+    var full = window.__ccmMaxH || window.innerHeight;
+    return full - vv.height > KB_MIN;
+  }
+  function fwd() {
+    var r = realAdd();
+    if (r) r.click(); // fires the app's React onClick -> attach menu
+  }
+  function forward() {
+    if (waiting) return; // a second tap while we wait must not toggle the menu twice
+    if (!kbOpen()) { fwd(); return; }
+    waiting = true;
+    var vv = window.visualViewport, done = false, timer = 0;
+    function finish() {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      vv.removeEventListener('resize', check);
+      // Two frames: let the app's own resize handlers (popover autoUpdate, layout)
+      // run against the final geometry before the menu is positioned.
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { waiting = false; fwd(); });
+      });
+    }
+    function check() { if (!kbOpen()) finish(); }
+    vv.addEventListener('resize', check);
+    timer = setTimeout(finish, SETTLE_MAX);
+    try {
+      var ae = document.activeElement;
+      if (ae && ae.closest && ae.closest('textarea, [contenteditable="true"]')) ae.blur();
+    } catch (err) { /* swallow */ }
+    check(); // the viewport may already have settled
+  }
   function sync() {
     try {
       // 2026-09-15 composer rebuild (data-cds="ChatComposer"): there is no flex
@@ -2970,8 +3036,7 @@ window.__ccmVer = (function () {
         proxy.addEventListener('click', function (e) {
           e.preventDefault();
           e.stopPropagation();
-          var r = realAdd();
-          if (r) r.click(); // fires the app's React onClick -> attach menu
+          forward();
         });
       } else if (proxy.childElementCount === 0 && real.innerHTML) {
         proxy.innerHTML = real.innerHTML; // keep the glyph in sync if it changed
