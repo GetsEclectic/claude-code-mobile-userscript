@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.154.0
+// @version      1.155.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,14 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.155: hide the "connection lost" surfaces of the /code client (Ben, 2026-10-03:
+   "always hide the connection lost dialog, it pops up all the time and it's almost
+   always wrong"). Four of them, all matched on their exact text by the ccmConnLost
+   module and hidden by rule 27b: the "Connection lost" and "Remote Control
+   disconnected" session error cards, the "Reconnecting to your computer" notice with
+   its "Keep working from anywhere" Continue-in-cloud follow-up, and the "Connection
+   lost. Reload the page to reconnect." toast. Kill switch: ccmConnLost=0.
 
    v1.154: the v1.153 wait is hardened for the K4y Code WebView, where the keyboard
    close is an ANIMATION (12 resizes over ~190ms), not one step. v1.153 treated
@@ -1247,6 +1255,21 @@ window.__ccmStyleEl = GM_addStyle(`
     display: none !important;
   }
 
+  /* 27b. Hide the "connection lost" surfaces (Ben, 2026-10-03: "always hide the
+     connection lost dialog, it pops up all the time and it's almost always wrong,
+     and it's not even useful when it's right"). Unlike rule 27 there is no stable
+     hook to key on: the session error card carries a testid but one shared by every
+     error category, and the notice and toast carry only utility classes. What
+     separates the connection ones is their TEXT, so the ccmConnLost module below
+     matches the exact strings and stamps data-ccm-connlost on the card or toast
+     root; this rule only paints that stamp. Nothing else carries the attribute, so
+     no other toast, notice or error card is touched. The stamp is removed again if
+     the card is re-rendered with a different title, and the kill switch
+     (ccmConnLost=0) stops the module stamping at all. */
+  [data-ccm-connlost] {
+    display: none !important;
+  }
+
   /* 28. Per-message action toolbar: surface fork / revert (and Copy / More
      options) on touch. claude.ai/code renders the toolbar below each message
      at opacity-0 pointer-events-none and only flips it visible+tappable via
@@ -1405,6 +1428,7 @@ window.__ccmFlags = (function () {
     branch: f('ccmBranch', true),       // gates collapsing the branch rows behind a button (v1.130)
     sugg: f('ccmSugg', true),           // gates the tap-to-accept prompt-suggestion chip (v1.132)
     upd: f('ccmUpd', true),             // gates the "newer version published" reload chip (v1.135)
+    connlost: f('ccmConnLost', true),   // gates hiding the "connection lost" cards/toast (v1.155)
   };
 })();
 
@@ -1427,7 +1451,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.154.0';
+  return '1.155.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -5120,6 +5144,141 @@ window.__ccmVer = (function () {
   // change) without a mutation the observer flags; a cheap interval covers both.
   setInterval(apply, 500);
   apply();
+})();
+
+/* v1.155 ccmConnLost - hide the /code client's "connection lost" surfaces.
+
+   Ben, 2026-10-03: "Let's also always hide the connection lost dialog, it pops
+   up all the time and it's almost always wrong, and it's not even useful when
+   it's right."
+
+   Ground truth (read from claude.ai's shipped front-end bundle on 2026-10-03,
+   assets-proxy.anthropic.com/claude-ai/v2/assets/v1/, NOT seen on a live logged-in
+   page - there is no authenticated profile on the build box). When the session
+   event stream (SSE) exhausts its reconnect budget - which is what a phone does
+   whenever the tab is backgrounded or the radio flaps - the transport emits a
+   disconnected state plus a network_error, and the app paints:
+
+   1. The session error card: div[data-testid="session-error-banner"] with the
+      category title in its first span.font-medium. network_error is "Connection
+      lost"; bridge_offline (Remote Control session whose host looks offline) is
+      "Remote Control disconnected"; sshDisconnected is "Lost connection to
+      {host}". The testid is shared by EVERY error category, so only the title
+      tells these apart - session expired, usage limit, git and the other errors
+      keep their own titles and stay visible.
+   2. The offline-bridge notice, shown while a Remote Control session reads
+      disconnected: first "Reconnecting to your computer" for ~25s, then "Keep
+      working from anywhere / This session is disconnected from your computer."
+      with Continue in cloud and Not now buttons. A NoticeCard: a div with
+      role="status" (role="note" when it stands in for the composer).
+   3. The toast "Connection lost. Reload the page to reconnect.", raised on an
+      unhandled stream "fatal". Toasts render under div[data-cds="Toast"].
+
+   Deliberately NOT hidden: failed-send indicators (data-testid failed-send-*),
+   "Computer went to sleep" and "Claude lost network access" (both say the
+   response may be incomplete and offer a retry), and every non-connection error.
+
+   Mechanism: match, stamp, let CSS (rule 27b) hide. The stamp is recomputed on
+   every pass, so a card React re-renders with a different title un-hides. A
+   notice or toast must START with the string and be short, so an ancestor that
+   merely contains one cannot be stamped. Kill switch from the phone:
+   claude.ai/code?ccmConnLost=0 (cards come back), ?ccmConnLost=1 to re-enable.
+   Test seam: window.__ccmConnLost.sync(). */
+(function () {
+  try {
+    var v = new URLSearchParams(location.search).get('ccmConnLost');
+    if (v === '0') { localStorage.setItem('ccmConnLost', '0'); window.__ccmFlags.connlost = false; }
+    else if (v === '1') { localStorage.removeItem('ccmConnLost'); window.__ccmFlags.connlost = true; }
+  } catch (e) { /* URLSearchParams/localStorage can throw in odd sandboxes */ }
+  if (!window.__ccmFlags.connlost) return;
+
+  var ATTR = 'data-ccm-connlost';
+  var BANNER_TITLES = ['Connection lost', 'Remote Control disconnected'];
+  var BANNER_HOST = /^Lost connection to \S/;
+  var NOTICE_STARTS = ['Reconnecting to your computer', 'Keep working from anywhere'];
+  var NOTICE_MUST_CONTAIN = ['Reconnecting to your computer', 'This session is disconnected from your computer.'];
+  var TOAST_START = 'Connection lost. Reload the page to reconnect.';
+  var NOTICE_MAX_TEXT = 260;
+  var TOAST_MAX_TEXT = 260;
+
+  function txt(el) { return (el.textContent || '').replace(/\s+/g, ' ').trim(); }
+
+  function startsWithAny(t, list) {
+    for (var i = 0; i < list.length; i++) if (t.indexOf(list[i]) === 0) return true;
+    return false;
+  }
+
+  function matchBanners(out) {
+    var banners = document.querySelectorAll('[data-testid="session-error-banner"]');
+    for (var i = 0; i < banners.length; i++) {
+      var title = banners[i].querySelector('span.font-medium');
+      var t = title ? txt(title) : '';
+      if (BANNER_TITLES.indexOf(t) !== -1 || BANNER_HOST.test(t)) out.push(banners[i]);
+    }
+  }
+
+  function matchNotices(out) {
+    var cards = document.querySelectorAll('[role="status"], [role="note"]');
+    for (var i = 0; i < cards.length; i++) {
+      var t = txt(cards[i]);
+      if (t.length > NOTICE_MAX_TEXT || !startsWithAny(t, NOTICE_STARTS)) continue;
+      // The long form must carry its detail line, so a "Keep working from
+      // anywhere" card about something else is not swept up.
+      var ok = false;
+      for (var j = 0; j < NOTICE_MUST_CONTAIN.length; j++) {
+        if (t.indexOf(NOTICE_MUST_CONTAIN[j]) !== -1) ok = true;
+      }
+      if (ok) out.push(cards[i]);
+    }
+  }
+
+  function matchToasts(out) {
+    var spans = document.querySelectorAll('[data-cds="Toast"] span');
+    for (var i = 0; i < spans.length; i++) {
+      if (txt(spans[i]).indexOf(TOAST_START) !== 0) continue;
+      // The toast root is the grandchild of the viewport; fall back to the
+      // nearest dialog/alert/status ancestor if the wrapping ever changes.
+      var root = spans[i].closest('[data-cds="Toast"] > * > *') ||
+                 spans[i].closest('[role="dialog"], [role="alert"], [role="status"]');
+      if (root && txt(root).length <= TOAST_MAX_TEXT) out.push(root);
+    }
+  }
+
+  function sync() {
+    try {
+      var hits = [];
+      matchBanners(hits);
+      matchNotices(hits);
+      matchToasts(hits);
+      // Stamp only the outermost match: the composer-standing notice nests a
+      // role="status" div inside its role="note" card, and both match.
+      hits = hits.filter(function (h) {
+        for (var n = 0; n < hits.length; n++) {
+          if (hits[n] !== h && hits[n].contains(h)) return false;
+        }
+        return true;
+      });
+      var stamped = document.querySelectorAll('[' + ATTR + ']');
+      for (var i = 0; i < stamped.length; i++) {
+        if (hits.indexOf(stamped[i]) === -1) stamped[i].removeAttribute(ATTR);
+      }
+      for (var k = 0; k < hits.length; k++) {
+        if (!hits[k].hasAttribute(ATTR)) hits[k].setAttribute(ATTR, '1');
+      }
+    } catch (e) { /* never let a scan break the page */ }
+  }
+  window.__ccmConnLost = { sync: sync };
+
+  var pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; sync(); });
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true, subtree: true, characterData: true,
+  });
+  sync();
 })();
 
 /* v1.135: "update installed, but the page is still running the old script."
