@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.153.0
+// @version      1.154.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,12 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.154: the v1.153 wait is hardened for the K4y Code WebView, where the keyboard
+   close is an ANIMATION (12 resizes over ~190ms), not one step. v1.153 treated
+   "under 120px of shrink left" as settled and opened the attach menu 83px short
+   of the final geometry, then it slid. The menu now opens when the viewport is
+   back at full height or has stopped changing for 150ms (hard cap 1200ms).
 
    v1.153: tapping the composer "+" with the soft keyboard up no longer opens the
    attach menu at the keyboard-up position and then flings it down. The tap moves
@@ -1421,7 +1427,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.153.0';
+  return '1.154.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -2939,35 +2945,45 @@ window.__ccmVer = (function () {
     }
     return null;
   }
-  /* v1.153: open the attach menu only AFTER the soft keyboard has finished closing.
+  /* v1.153/v1.154: open the attach menu only AFTER the soft keyboard has finished
+     closing, i.e. at the geometry it will keep.
 
      With the keyboard up, the tap on this button takes focus off the composer, so
      the keyboard starts closing; the click we forward opens the app's menu (a Base
      UI popover that also takes focus into itself, so the keyboard would close even
-     if the button kept focus). The menu is positioned ONCE, against the toolbar
-     "+" at the keyboard-up layout, and the keyboard finishes closing ~35ms later:
-     the viewport grows ~336px (interactive-widget=resizes-content), the composer
-     drops to the bottom and the menu is re-anchored under the finger. Measured on a
-     real Gboard in Chromium: menu top 299 -> 636 in 20ms.
+     if the button kept focus). The menu is positioned against the toolbar "+" and
+     re-anchored on every resize, so a menu opened before the viewport has stopped
+     growing visibly slides down under the finger. Measured on a real Gboard:
+       - Chromium (browser): ONE step, 498 -> 834, ~35ms after the click.
+       - K4y Code WebView (Compose safeDrawingPadding follows the IME inset
+         animation): 12 resizes over ~190ms, 554 -> 866, first one ~55ms after the
+         click. v1.153 settled on "remaining shrink < 120px" and opened the menu at
+         581 with 83px of the animation still to go (it then moved to 665).
 
      Keeping the keyboard up instead is not possible from here: the menu takes focus
      on open and a focused non-editable element closes the IME, and handing focus
      back to the composer would make the menu's focus-out dismiss close it. So close
-     the keyboard first - blur the composer ourselves, wait for the viewport to
-     reach its keyboard-down height (visualViewport 'resize', bounded by SETTLE_MAX
-     so a missing event can never eat the tap), then forward the click: the menu
-     opens once, in its final place. Plain DOM + visualViewport events only, so it
-     behaves the same in the K4y WebView (main world) and in a Violentmonkey sandbox.
-     When no keyboard is up (kbOpen() false) the click is forwarded synchronously,
-     exactly as before. */
-  var KB_MIN = 120;      // px of viewport shrink that counts as a soft keyboard
-  var SETTLE_MAX = 700;  // ms: give up waiting and forward anyway
+     the keyboard first - blur the composer ourselves - and forward the click once
+     the viewport has STOPPED moving. Settled means any of: (a) a resize has been
+     seen and the height is back within AT_FULL px of the keyboard-down height;
+     (b) a resize has been seen and none has followed for QUIET_MS (does not trust
+     __ccmMaxH, which can be stale-high after a layout change; the longest gap inside
+     one measured animation was ~47ms); (c) no resize at all began within START_MAX
+     (nothing is closing, e.g. a hardware keyboard); (d) SETTLE_MAX, a hard cap so a
+     tap can never be lost. Plain DOM + visualViewport events only, so it behaves the
+     same in the K4y WebView (main world) and in a Violentmonkey sandbox. When no
+     keyboard is up (kbOpen() false) the click is forwarded synchronously. */
+  var KB_MIN = 120;       // px of viewport shrink that counts as a soft keyboard
+  var AT_FULL = 4;        // px: within this of the keyboard-down height = settled
+  var QUIET_MS = 150;     // ms without a resize (after >=1) = the animation is over
+  var START_MAX = 400;    // ms: no resize began, so no keyboard is closing
+  var SETTLE_MAX = 1200;  // ms: hard cap, forward anyway
   var waiting = false;
+  function fullH() { return window.__ccmMaxH || window.innerHeight; }
   function kbOpen() {
     var vv = window.visualViewport;
     if (!vv || window.innerWidth > 900) return false;
-    var full = window.__ccmMaxH || window.innerHeight;
-    return full - vv.height > KB_MIN;
+    return fullH() - vv.height > KB_MIN;
   }
   function fwd() {
     var r = realAdd();
@@ -2977,26 +2993,33 @@ window.__ccmVer = (function () {
     if (waiting) return; // a second tap while we wait must not toggle the menu twice
     if (!kbOpen()) { fwd(); return; }
     waiting = true;
-    var vv = window.visualViewport, done = false, timer = 0;
+    var vv = window.visualViewport, done = false;
+    var t0 = Date.now(), seen = false, lastRz = 0, poll = 0;
     function finish() {
       if (done) return;
       done = true;
-      clearTimeout(timer);
-      vv.removeEventListener('resize', check);
+      clearInterval(poll);
+      vv.removeEventListener('resize', onResize);
       // Two frames: let the app's own resize handlers (popover autoUpdate, layout)
       // run against the final geometry before the menu is positioned.
       requestAnimationFrame(function () {
         requestAnimationFrame(function () { waiting = false; fwd(); });
       });
     }
-    function check() { if (!kbOpen()) finish(); }
-    vv.addEventListener('resize', check);
-    timer = setTimeout(finish, SETTLE_MAX);
+    function check() {
+      var now = Date.now();
+      if ((seen && fullH() - vv.height <= AT_FULL) ||
+          (seen && now - lastRz >= QUIET_MS) ||
+          (!seen && now - t0 >= START_MAX) ||
+          now - t0 >= SETTLE_MAX) finish();
+    }
+    function onResize() { seen = true; lastRz = Date.now(); check(); }
+    vv.addEventListener('resize', onResize);
+    poll = setInterval(check, 25);
     try {
       var ae = document.activeElement;
       if (ae && ae.closest && ae.closest('textarea, [contenteditable="true"]')) ae.blur();
     } catch (err) { /* swallow */ }
-    check(); // the viewport may already have settled
   }
   function sync() {
     try {
