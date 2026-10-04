@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.157.0
+// @version      1.158.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,10 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.158: v1.157's focus swallow was not enough on the real page: claude.ai's cds sheet
+   sets inert + data-cds-sheet-inert on the focused composer ~20ms after the menu opens,
+   which blurs it and hides the IME. That is blocked while the proxy-opened menu is up.
 
    v1.157: tapping the composer + keeps the soft keyboard up (the attach menu's own
    focus() is swallowed while a composer holds focus; v1.153/v1.154's close-and-wait is gone).
@@ -1492,7 +1496,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.157.0';
+  return '1.158.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -3325,6 +3329,40 @@ window.__ccmVer = (function () {
       } catch (err) { /* fall through to the real focus */ }
       return origFocus.apply(this, arguments);
     };
+  } catch (err) { /* frozen prototype: stock behaviour */ }
+  /* v1.158: the real claude.ai page (measured by a CDP focus trace on the phone) has a
+     cds sheet chunk that calls setAttribute('inert') and ('data-cds-sheet-inert') on the
+     focused composer editor ~20ms after the menu opens. An inert focused element is
+     blurred and Chromium hides the IME, even with the menu's focus() swallowed. While
+     holdOn, refuse inert on the composer, and only while it is the active element, so
+     other sheets and dialogs are untouched. */
+  function holdsComposer(el) {
+    try {
+      return holdOn && el && el.matches && el.matches('[data-testid="code-prompt-input"]') &&
+        el === document.activeElement;
+    } catch (err) { return false; }
+  }
+  try {
+    var origSetAttr = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function (n) {
+      if ((n === 'inert' || n === 'data-cds-sheet-inert') && holdsComposer(this)) return;
+      return origSetAttr.apply(this, arguments);
+    };
+    var origToggleAttr = Element.prototype.toggleAttribute;
+    Element.prototype.toggleAttribute = function (n, force) {
+      if (n === 'inert' && force !== false && holdsComposer(this)) return false;
+      return origToggleAttr.apply(this, arguments);
+    };
+    var inertDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'inert');
+    if (inertDesc && inertDesc.set) {
+      Object.defineProperty(HTMLElement.prototype, 'inert', {
+        configurable: true, enumerable: inertDesc.enumerable, get: inertDesc.get,
+        set: function (v) {
+          if (v && holdsComposer(this)) return;
+          inertDesc.set.call(this, v);
+        }
+      });
+    }
   } catch (err) { /* frozen prototype: stock behaviour */ }
   document.addEventListener('mousedown', function (e) {
     try {
