@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.155.0
+// @version      1.156.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,17 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.156: ONE session menu. Ben (2026-10-04): the down-arrow (chevron) menu next to
+   the session name, aria-label "More options for <title>", is the menu that holds
+   Rename / Archive / Delete, so Diff ("Changes"), Share and the top-right three-dots
+   ("View options") move into it, and a new Ship item sits next to Archive and
+   Delete (it types /ship into the composer and sends it; it replaces the K4y Code
+   native-menu Ship item). Rule 12e hides the three right-cluster controls, but ONLY
+   those the ccmSessMenu module has marked data-ccm-hid, and the module marks them
+   only while the chevron is in the title bar and has not failed to hook. Archive
+   and Delete are never hidden or re-implemented: they stay the app's own items.
+   Kill switch: ccmSessMenu=0.
 
    v1.155: hide the "connection lost" surfaces of the /code client (Ben, 2026-10-03:
    "always hide the connection lost dialog, it pops up all the time and it's almost
@@ -577,6 +588,32 @@ window.__ccmStyleEl = GM_addStyle(`
   [data-top-left="true"] .ml-auto:has([aria-label^="Session actions"]) button:not([aria-label^="Session actions"]):not([data-ccm-branch-btn]),
   [data-top-left="true"] .ml-auto:has([aria-label^="More options for "]) > :not([aria-label^="More options for "]):not([data-ccm-branch-btn]):not(:has([aria-label^="More options for "])):not(:has([data-ccm-branch-btn])),
   [data-top-left="true"] .ml-auto:has([aria-label^="More options for "]) button:not([aria-label^="More options for "]):not([data-ccm-branch-btn]) {
+    display: none !important;
+  }
+
+  /* 12e. v1.156 - Diff ("Changes"), Share and the three-dots ("View options")
+     live in the chevron menu next to the session title now (Ben 2026-10-04: "move
+     the stuff in the top-right three dots menu into the down arrow menu next to
+     the session name, and move share and diff there too").
+
+     Keyed on OUR attribute, never on a class or a wrapper level: the ccmSessMenu
+     module sets data-ccm-hid on exactly the controls it has a forwarding menu
+     item for, and only while the chevron is present and has not failed to hook.
+     No chevron, a failed hook, or ccmSessMenu=0 means no attribute and the bar is
+     the stock one - the stand-down direction every rule in this file degrades in.
+
+     "View options" is a Base UI menu TRIGGER like the Cloud and repo controls in
+     12d, so it gets the same treatment: it is hidden only while
+     html[data-ccm-view="open"] is absent, and the module keeps that attribute in
+     step with the trigger's own aria-expanded so the popup has a laid-out box to
+     anchor to. Diff and Share are plain buttons and simply hide.
+
+     The wrapper rule collapses the flex gap the Diff wrapper (div.empty:hidden
+     around a lone button) would keep claiming; it fires only when the hidden
+     button is the wrapper's ONLY child. */
+  [data-top-left="true"] [data-ccm-hid]:not([data-ccm-hid="view"]),
+  html:not([data-ccm-view="open"]) [data-top-left="true"] [data-ccm-hid="view"],
+  [data-top-left="true"] div:has(> [data-ccm-hid]:not([data-ccm-hid="view"]):only-child) {
     display: none !important;
   }
 
@@ -1429,6 +1466,7 @@ window.__ccmFlags = (function () {
     sugg: f('ccmSugg', true),           // gates the tap-to-accept prompt-suggestion chip (v1.132)
     upd: f('ccmUpd', true),             // gates the "newer version published" reload chip (v1.135)
     connlost: f('ccmConnLost', true),   // gates hiding the "connection lost" cards/toast (v1.155)
+    sessmenu: f('ccmSessMenu', true),   // gates folding Diff/Share/View options + Ship into the chevron menu (v1.156)
   };
 })();
 
@@ -1451,7 +1489,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.155.0';
+  return '1.156.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -1492,10 +1530,93 @@ window.__ccmVer = (function () {
   var REPO = '[data-top-left="true"] [data-testid="epitaxy-origin-label"]';
   var pendingMenu = false;
 
+  /* v1.156 ccmSessMenu: the chevron next to the session title ("More options for
+     <title>", a menu trigger inside [data-top-left]) is the ONE session menu.
+     CHEV is deliberately narrower than KEBAB: it must be a button in the title
+     bar, so a legacy "Session actions" kebab or a sidebar row never counts as it.
+     SESS_CTRL names the three right-cluster controls that fold into it. Diff was
+     labelled "Diff" before the 2026-09 build and "Changes" after; "View options"
+     is the three-dots. Each is matched by aria-label inside the title bar. */
+  var CHEV = '[data-top-left="true"] button[aria-label^="More options for "]';
+  var SESS_CTRL = [
+    { kind: 'changes', sel: '[data-top-left="true"] button[aria-label="Changes"], [data-top-left="true"] button[aria-label="Diff"]', popup: false },
+    { kind: 'share', sel: '[data-top-left="true"] button[aria-label="Share"]', popup: false },
+    { kind: 'view', sel: '[data-top-left="true"] button[aria-label="View options"]', popup: true },
+  ];
+  // Once the chevron menu has failed to hook (no menu appeared, or inject could
+  // not find an item to clone) the controls come back and stay back until reload.
+  // Archive and Delete are never in this list: they are the app's own chevron
+  // items and are neither hidden nor re-implemented by this module.
+  var sessOff = false;
+
+  function sessEnabled() {
+    return !!(window.__ccmFlags && window.__ccmFlags.sessmenu) && !sessOff;
+  }
+
+  function sessControls() {
+    var out = [];
+    SESS_CTRL.forEach(function (c) {
+      var b = document.querySelector(c.sel);
+      if (b) out.push({ kind: c.kind, btn: b, popup: c.popup, label: (b.getAttribute('aria-label') || '').trim(),
+                        icon: b.querySelector('svg, [data-cds="Icon"]') });
+    });
+    return out;
+  }
+
+  function unhideAll() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-ccm-hid]'), function (el) {
+      el.removeAttribute('data-ccm-hid');
+    });
+    document.documentElement.removeAttribute('data-ccm-view');
+  }
+
+  function standDown(reason) {
+    sessOff = true;
+    try { unhideAll(); } catch (e) { /* never break the bar */ }
+    try { console.log('CCM_SESSMENU standdown reason=' + reason); } catch (e) { /* no console */ }
+  }
+
+  /* Mark each present control hidden, but only while the chevron is in the bar.
+     No chevron (older build, a restructure, a sidebar-only page) => nothing is
+     marked and any earlier mark is removed, so the stock controls are visible.
+     Idempotent and cheap: it runs on the same rAF-throttled tick as syncOrigin. */
+  function syncCluster() {
+    var chev = sessEnabled() ? document.querySelector(CHEV) : null;
+    if (!chev) { if (document.querySelector('[data-ccm-hid]')) unhideAll(); return; }
+    var keep = [];
+    sessControls().forEach(function (c) {
+      keep.push(c.btn);
+      if (c.btn.getAttribute('data-ccm-hid') !== c.kind) c.btn.setAttribute('data-ccm-hid', c.kind);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-ccm-hid]'), function (el) {
+      if (keep.indexOf(el) === -1) el.removeAttribute('data-ccm-hid');
+    });
+    // The three-dots trigger anchors its popup to its own box, so it must be laid
+    // out while its menu is up (same dance as syncOrigin).
+    var view = document.querySelector('[data-ccm-hid="view"]');
+    if (view && view.getAttribute('aria-expanded') === 'true') {
+      document.documentElement.setAttribute('data-ccm-view', 'open');
+    } else {
+      document.documentElement.removeAttribute('data-ccm-view');
+    }
+  }
+
   // Latch when the kebab is tapped so we can claim the menu it spawns.
   document.addEventListener('click', function (e) {
     var t = e.target && e.target.closest && e.target.closest(KEBAB);
-    if (t) pendingMenu = true;
+    if (t) {
+      pendingMenu = true;
+      // Hook check for the chevron: a tap that never produces a menu means the
+      // controls we hid have no way in, so give them back.
+      if (t.matches && t.matches(CHEV)) {
+        setTimeout(function () {
+          if (pendingMenu && !document.querySelector('[role="menu"]')) {
+            pendingMenu = false;
+            standDown('no-menu');
+          }
+        }, 1500);
+      }
+    }
   }, true);
 
   function repoPill() {
@@ -1586,11 +1707,20 @@ window.__ccmVer = (function () {
     if (menu.querySelector('[data-ccm-relocated]')) return; // already done
     var kebab = document.querySelector(KEBAB);
     if (!kebab) return;
-    var actions = realButtons(kebab);
-    if (!actions.length) return;
+    // v1.156: under the chevron, the actions are the three right-cluster
+    // controls, not the title group's siblings (realButtons() would walk the
+    // chevron's parent and only ever match the rename button there).
+    var chevron = !!(kebab.matches && kebab.matches(CHEV));
+    var actions = chevron ? sessControls() : realButtons(kebab);
     var list = menu.querySelector('.flex-1.min-h-0') || menu; // item container
     var template = menu.querySelector('[role="menuitem"]');
-    if (!template) return;
+    if (!template) {
+      // Nothing to clone the native styling from: we cannot add items, so the
+      // controls we hid must come back (never leave Diff/Share/View stranded).
+      if (chevron) standDown('no-template');
+      return;
+    }
+    if (!chevron && !actions.length) return;
 
     // Some cluster actions the menu ALREADY exposes natively (e.g. when a task
     // is running the menu shows its own "Background tasks" item; the bar also
@@ -1642,7 +1772,9 @@ window.__ccmVer = (function () {
              open. */
           closeMenu();
           setTimeout(function () {
-            document.documentElement.setAttribute('data-ccm-origin', 'open');
+            // The three-dots trigger (v1.156) has its own laid-out-while-open
+            // attribute; the Cloud / repo triggers keep the origin one.
+            document.documentElement.setAttribute(a.kind === 'view' ? 'data-ccm-view' : 'data-ccm-origin', 'open');
             a.btn.click();
           }, 180);
           return;
@@ -1653,10 +1785,23 @@ window.__ccmVer = (function () {
       return it;
     }
 
-    actions.forEach(function (a) {
-      if (alreadyInMenu(a.label)) return; // menu already exposes this action
+    function nativeHas(label) {
+      // Chevron path: exact label only. The word-overlap test above would read
+      // "Share" as already present on any native item whose text merely
+      // contains "share", and by then the real button is hidden - a false
+      // positive there strands the control.
+      var want = label.toLowerCase();
+      return Array.prototype.some.call(menu.querySelectorAll('[role="menuitem"]'), function (i) {
+        return itemLabel(i) === want;
+      });
+    }
+    (chevron ? actions.slice().reverse() : actions).forEach(function (a) {
+      if (chevron ? nativeHas(a.label) : alreadyInMenu(a.label)) return;
       list.insertBefore(makeItem(a), list.firstChild);
     });
+    if (chevron) {
+      try { insertShip(menu, list, template, kebab); } catch (e) { /* never break the native menu */ }
+    }
 
     // Lead-group controls go in last, at the top, in reverse — so the menu
     // reads Cloud, <repos>, then the relocated cluster actions. alreadyInMenu()
@@ -1669,6 +1814,161 @@ window.__ccmVer = (function () {
     });
   }
 
+  /* ── v1.156 Ship ─────────────────────────────────────────────────────────
+     Ported from K4y Code's native-menu action (assets/ccm-ship.js, 2026-10-03):
+     types the literal text /ship into the session composer and sends it, as if
+     typed by hand. It lives here now so it sits beside Archive and Delete in the
+     chevron menu, and so it also runs in Firefox.
+
+     Composer DOM measured 2026-10-03 on Ben's live WebView over read-only CDP: a
+     TipTap/ProseMirror div[contenteditable][role=textbox][aria-label=Prompt]
+     [data-testid=code-prompt-input] (no textarea, no form; empty innerText is
+     "\n") and button[data-testid=code-prompt-send][aria-label=Send], disabled
+     while the composer is empty. Insertion goes through
+     document.execCommand('insertText') so ProseMirror's own beforeinput/input
+     listeners run and Send enables the way it does for a keystroke; assigning
+     textContent would desync the editor.
+
+     Refusals, each logged as CCM_SHIP ok=false reason=... and NEVER carrying the
+     composer's contents: no composer on the page, a turn streaming (Enter would
+     STEER it, not start a run), a draft already in the composer (never
+     clobbered), or the insertion not taking. */
+  var SHIP_TEXT = '/ship';
+  // Tried in order, never as one comma list: querySelector on a list returns the
+  // first match in DOCUMENT order, so a stray aria-label match earlier in the page
+  // would win over the testid hook measured on the live composer.
+  var SHIP_COMPOSER = ['[data-testid="code-prompt-input"][contenteditable="true"]',
+    '[aria-label="Prompt"][contenteditable="true"][role="textbox"]'];
+  var SHIP_SEND = ['button[data-testid="code-prompt-send"]', 'button[aria-label="Send"]'];
+  function shipFind(sels) {
+    for (var i = 0; i < sels.length; i++) {
+      var el = document.querySelector(sels[i]);
+      if (el) return el;
+    }
+    return null;
+  }
+  var SHIP_STOP = 'button[aria-label="Stop"]';
+  var SHIP_ENABLE_MS = 2000;
+  var SHIP_POLL_MS = 50;
+  var SHIP_NOTE = {
+    'no-composer': 'Ship: no message box on this page',
+    'streaming': 'Ship skipped: Claude is still responding',
+    'draft-present': 'Ship skipped: the message box has a draft',
+    'insert-failed': 'Ship failed: could not type into the message box',
+  };
+
+  function shipNote(text) {
+    try {
+      var n = document.createElement('div');
+      n.setAttribute('data-ccm-ship-note', '1');
+      n.setAttribute('role', 'status');
+      n.textContent = text;
+      n.style.cssText = 'position:fixed;left:50%;bottom:96px;transform:translateX(-50%);' +
+        'z-index:2147483647;max-width:86vw;padding:10px 14px;border-radius:10px;' +
+        'background:#262626;color:#fff;font:14px/1.3 system-ui,sans-serif;' +
+        'box-shadow:0 2px 12px rgba(0,0,0,.35);pointer-events:none';
+      document.body.appendChild(n);
+      setTimeout(function () { if (n.parentNode) n.parentNode.removeChild(n); }, 3000);
+    } catch (e) { /* a missing toast must never break the action */ }
+  }
+
+  function runShip(done) {
+    function report(ok, reason, via) {
+      console.log('CCM_SHIP ok=' + ok + (reason ? ' reason=' + reason : '') + (via ? ' via=' + via : ''));
+      if (!ok && SHIP_NOTE[reason]) shipNote(SHIP_NOTE[reason]);
+      if (typeof done === 'function') { try { done({ ok: ok, reason: reason || null, via: via || null }); } catch (e) { /* caller's problem */ } }
+    }
+    function textOf(el) {
+      return (el.innerText || el.textContent || '').replace(/ /g, ' ').trim();
+    }
+    function visibleEnabled(sel) {
+      var list = document.querySelectorAll(sel);
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].offsetParent !== null && !list[i].disabled) return list[i];
+      }
+      return null;
+    }
+    var composer = shipFind(SHIP_COMPOSER);
+    if (!composer) return report(false, 'no-composer');
+    if (visibleEnabled(SHIP_STOP)) return report(false, 'streaming');
+    if (textOf(composer) !== '') return report(false, 'draft-present');
+    composer.focus();
+    try { document.execCommand('insertText', false, SHIP_TEXT); } catch (e) { /* checked below */ }
+    if (textOf(composer) !== SHIP_TEXT) return report(false, 'insert-failed');
+    var waited = 0;
+    (function submit() {
+      var send = shipFind(SHIP_SEND);
+      if (send && !send.disabled) {
+        send.click();
+        return report(true, null, 'click');
+      }
+      if (waited >= SHIP_ENABLE_MS) {
+        composer.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+        }));
+        return report(true, null, 'enter');
+      }
+      waited += SHIP_POLL_MS;
+      setTimeout(submit, SHIP_POLL_MS);
+    })();
+  }
+
+  /* The visible label of a native menu item: its first non-empty text node with
+     the Anthropicons private-use glyph stripped, lowercased. textContent of a
+     whole item glues the glyph, the label, a description and a shortcut hint
+     together (see the "Cloud" note in memory/reference_userscript_publish.md). */
+  function itemLabel(item) {
+    var w = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, null);
+    var n;
+    while ((n = w.nextNode())) {
+      var s = (n.nodeValue || '').replace(/[-]/g, '').trim();
+      if (s) return s.toLowerCase();
+    }
+    return '';
+  }
+
+  function findNative(menu, testid, label) {
+    var el = menu.querySelector('[data-testid="' + testid + '"]');
+    if (el) return el;
+    var items = menu.querySelectorAll('[role="menuitem"]');
+    for (var i = 0; i < items.length; i++) {
+      if (itemLabel(items[i]) === label) return items[i];
+    }
+    return null;
+  }
+
+  /* Ship goes immediately above Archive (or above Delete when Archive is absent),
+     in the same list as the app's own items, so it sits beside them whatever the
+     container nesting is. With neither present it goes last in the list. */
+  function insertShip(menu, list, template, kebab) {
+    if (menu.querySelector('[data-ccm-ship-item]')) return;
+    var archive = findNative(menu, 'archive-session-trigger', 'archive');
+    var del = findNative(menu, 'delete-session-trigger', 'delete');
+    var anchor = archive || del;
+    var it = document.createElement('div');
+    it.setAttribute('role', 'menuitem');
+    it.setAttribute('data-ccm-relocated', '1');
+    it.setAttribute('data-ccm-ship-item', '1');
+    it.tabIndex = -1;
+    // Archive is a plain (non-danger) item, so it is the right style donor; the
+    // Delete item is danger-styled and must not lend its red.
+    it.className = (archive ? archive : template).className;
+    var span = document.createElement('span');
+    span.className = 'flex-1 min-w-0 truncate';
+    span.textContent = 'Ship';
+    it.appendChild(span);
+    it.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+      // Wait out the menu's close: Base UI hands focus back to its trigger on
+      // close, which would undo composer.focus() inside runShip.
+      setTimeout(function () { runShip(); }, 300);
+    });
+    if (anchor && anchor.parentElement) anchor.parentElement.insertBefore(it, anchor);
+    else list.appendChild(it);
+  }
+
   var pend = false;
   function schedule() {
     if (pend) return;
@@ -1676,11 +1976,15 @@ window.__ccmVer = (function () {
     requestAnimationFrame(function () {
       pend = false;
       try { syncOrigin(); } catch (e) { /* never break the bar */ }
+      try { syncCluster(); } catch (e) { /* never break the bar */ }
       if (!pendingMenu) return;
       var menu = document.querySelector('[role="menu"]');
       if (!menu) return;
       pendingMenu = false;
-      try { inject(menu); } catch (e) { /* never break the native menu */ }
+      try { inject(menu); } catch (e) {
+        /* never break the native menu */
+        if (document.querySelector(CHEV)) standDown('inject-threw');
+      }
     });
   }
   new MutationObserver(schedule).observe(document.documentElement, {
@@ -1689,8 +1993,10 @@ window.__ccmVer = (function () {
   // Base UI flips aria-expanded on the trigger without touching childList up
   // here, so the childList observer alone would never see the origin/repo menu
   // close. Same rAF throttle, so a streaming transcript can't make this hot.
+  // v1.156: aria-label too, so a relabelled chevron (the 2026-08-28 failure mode)
+  // is noticed on the next frame and the hidden controls come back.
   new MutationObserver(schedule).observe(document.documentElement, {
-    attributes: true, subtree: true, attributeFilter: ['aria-expanded'],
+    attributes: true, subtree: true, attributeFilter: ['aria-expanded', 'aria-label'],
   });
   // Export for the headless logic test (see memory/reference_userscript_publish.md
   // "Reliable way to inspect/verify a live-app menu"): the harness has no real
@@ -1698,7 +2004,8 @@ window.__ccmVer = (function () {
   // against synthetic DOM without a live popover.
   window.__ccmRelocate = {
     inject: inject, syncOrigin: syncOrigin, leadActions: leadActions,
-    realButtons: realButtons,
+    realButtons: realButtons, syncCluster: syncCluster, runShip: runShip,
+    isStoodDown: function () { return sessOff; },
   };
 })();
 
