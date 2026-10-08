@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.158.0
+// @version      1.159.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1174,7 +1174,7 @@ window.__ccmStyleEl = GM_addStyle(`
   [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
     background: var(--ccm-st-run) !important;
     border: 0 !important;
-    animation: ccm-st-pulse 1.6s ease-out infinite !important;
+    animation: ccm-st-pulse 1.6s ease-in-out infinite !important;
   }
   [data-row][data-ccm-state="unread"] .df-leading-slot > [aria-label] > span {
     background: var(--ccm-st-new) !important;
@@ -1188,9 +1188,15 @@ window.__ccmStyleEl = GM_addStyle(`
     background: transparent !important;
     border: 2px dashed var(--ccm-st-off) !important;
   }
+  /* v1.159: opacity, not a box-shadow halo. box-shadow cannot run on the
+     compositor, so the old pulse forced a main-thread style recalc + repaint
+     on every frame (120/s on the Pixel) for as long as ANY session was
+     running - including the dots in the closed, visibility:hidden sidebar.
+     Measured 2026-10-07 in headless Chrome: box-shadow 23-40 ms/s main
+     thread and 60 recalc/s, opacity 0.7 ms/s and 0 recalc/s. */
   @keyframes ccm-st-pulse {
-    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ccm-st-run) 70%, transparent); }
-    100% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--ccm-st-run) 0%, transparent); }
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
   }
   @media (prefers-reduced-motion: reduce) {
     [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
@@ -1254,7 +1260,7 @@ window.__ccmStyleEl = GM_addStyle(`
   [data-top-left="true"] [data-ccm-state="running"]::after {
     background: var(--ccm-st-run);
     border: 0;
-    animation: ccm-st-pulse 1.6s ease-out infinite;
+    animation: ccm-st-pulse 1.6s ease-in-out infinite;
   }
   [data-top-left="true"] [data-ccm-state="offline"]::after {
     border: 2px dashed var(--ccm-st-off);
@@ -1496,7 +1502,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.158.0';
+  return '1.159.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
