@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.163.0
+// @version      1.164.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1231,7 +1231,6 @@ window.__ccmStyleEl = GM_addStyle(`
   [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
     background: var(--ccm-st-run) !important;
     border: 0 !important;
-    animation: ccm-st-pulse 1.6s ease-in-out infinite !important;
   }
   [data-row][data-ccm-state="unread"] .df-leading-slot > [aria-label] > span {
     background: var(--ccm-st-new) !important;
@@ -1245,32 +1244,18 @@ window.__ccmStyleEl = GM_addStyle(`
     background: transparent !important;
     border: 2px dashed var(--ccm-st-off) !important;
   }
-  /* v1.159: opacity, not a box-shadow halo. box-shadow cannot run on the
-     compositor, so the old pulse forced a main-thread style recalc + repaint
-     on every frame (120/s on the Pixel) for as long as ANY session was
-     running - including the dots in the closed, visibility:hidden sidebar.
-     Measured 2026-10-07 in headless Chrome: box-shadow 23-40 ms/s main
-     thread and 60 recalc/s, opacity 0.7 ms/s and 0 recalc/s. */
-  @keyframes ccm-st-pulse {
-    0%, 100% { opacity: 1; }
-    50%      { opacity: 0.35; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
-      animation: none !important;
-    }
-  }
-  /* v1.160: no pulse while the sidebar is closed. The closed phone sheet is
-     [data-testid="sidebar"][inert] at visibility:hidden, and Chromium cannot
-     composite an animation on an element it does not paint, so even the
-     v1.159 opacity pulse ran on the main thread there. Measured 2026-10-07 on
-     the Pixel (K4y Code WebView, 3 interleaved reps): pausing just those hidden
-     dots took the renderer from ~50% CPU to ~5-15% and style recalcs from
-     ~60/s to ~0; pausing every claude.ai animation instead changed nothing.
-     Keyed on any inert ancestor, so a build that drops the attribute degrades
-     to the old cost, never to a dead dot in an open sidebar. */
-  [inert] [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
-    animation: none !important;
+  /* v1.164: the running dot blinks by a JS timer, not a CSS animation.
+     Any infinite CSS animation, even a compositor-only opacity one, keeps the
+     WebView producing a frame every vsync (120/s on the Pixel). Measured
+     2026-10-08 on the Pixel, sidebar open, 3 interleaved reps of 8s, app +
+     renderer CPU: smooth opacity pulse 120-133%, steps(1) blink 37-63%, no
+     pulse 7-17%. The companion below flips html[data-ccm-blink] every 800ms
+     while a running dot exists, so the page repaints ~1x/s instead.
+     History: v1.150-1.158 pulsed box-shadow (main thread every frame), v1.159
+     moved to opacity, v1.160 stopped it in the closed sidebar, v1.163 removed
+     an opacity !important floor that hid it. */
+  html[data-ccm-blink] [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
+    opacity: 0.35 !important;
   }
   /* Running rows are the emphasized ones: green tint and a bold primary title.
      The tint is an inset shadow, not a background, so the app's own
@@ -1329,13 +1314,12 @@ window.__ccmStyleEl = GM_addStyle(`
   [data-top-left="true"] [data-ccm-state="running"]::after {
     background: var(--ccm-st-run);
     border: 0;
-    animation: ccm-st-pulse 1.6s ease-in-out infinite;
+  }
+  html[data-ccm-blink] [data-top-left="true"] [data-ccm-state="running"]::after {
+    opacity: 0.35;
   }
   [data-top-left="true"] [data-ccm-state="offline"]::after {
     border: 2px dashed var(--ccm-st-off);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    [data-top-left="true"] [data-ccm-state="running"]::after { animation: none; }
   }
 
   /* 26. Side panel (plan / file / diff) full-width on phones. The detail panel
@@ -1572,7 +1556,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.163.0';
+  return '1.164.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -5939,4 +5923,21 @@ window.__ccmVer = (function () {
   window.addEventListener('contextmenu', function (e) {
     if (caretFor(e.target)) e.preventDefault();
   }, true);
+})();
+
+/* v1.164: running-dot blink driver (see the rule 25b note). One html attribute
+   flipped every 800ms: Chromium invalidates only the two selectors that name
+   it, and the page repaints twice per cycle instead of every vsync. Stays off
+   (attribute removed) while the page is hidden, nothing is running, or the
+   user asks for reduced motion. */
+(function () {
+  var RUN = '[data-row][data-ccm-state="running"], [data-top-left="true"] [data-ccm-state="running"]';
+  var rm = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  setInterval(function () {
+    var h = document.documentElement;
+    var lit = h.hasAttribute('data-ccm-blink');
+    var want = !lit && !document.hidden && !(rm && rm.matches) && !!document.querySelector(RUN);
+    if (want) h.setAttribute('data-ccm-blink', '');
+    else if (lit) h.removeAttribute('data-ccm-blink');
+  }, 800);
 })();
