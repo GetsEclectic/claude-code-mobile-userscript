@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.161.0
+// @version      1.162.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1160,6 +1160,14 @@ window.__ccmStyleEl = GM_addStyle(`
     width: 360px !important;
     max-width: 92vw !important;
   }
+  /* v1.162: newer builds DO read --df-sidebar-width from .dframe-root (inline
+     style, 288px) and size the aside - which carries the background - from it.
+     With only the panel widened, the extra 72px of rows, kebabs and the header
+     "+"/filter buttons spilled out past the aside over the transcript (Ben's
+     tablet, 2026-10-07). Widen the var too so the aside matches the panel. */
+  .dframe-root {
+    --df-sidebar-width: min(360px, 92vw) !important;
+  }
 
   /* 25b. Session state at a glance (v1.150, replaces the v1.71 grey idle-age
      label). Ben 2026-09-14: "very clear indication for sessions that are active
@@ -1555,7 +1563,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.161.0';
+  return '1.162.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -3700,9 +3708,21 @@ window.__ccmVer = (function () {
   // click is a MouseEvent (no pointerType), so we can't re-check touch here —
   // instead gate on `fireOwn` (our synchronous dispatch) for the allow, and a
   // short post-dispatch window for the native straggler from the same gesture.
+  // v1.162: the straggler can land on the CLOSE button. On a tablet (823px,
+  // Ben's SM-X520, 2026-10-07) the opened sidebar paints "Hide sidebar" exactly
+  // where "Show sidebar" was, so the native click from the same tap hit Hide and
+  // shut the drawer it had just opened: the sidebar looked stuck closed.
+  var CLOSE_SEL = '[aria-label="Hide sidebar"], [aria-label="Close sidebar"]';
   document.addEventListener('click', function (e) {
-    var btn = e.target && e.target.closest && e.target.closest(SEL);
-    if (!btn) return;
+    var t = e.target && e.target.closest ? e.target : null;
+    var btn = t && t.closest(SEL);
+    if (!btn) {
+      if (t && !fireOwn && t.closest(CLOSE_SEL) && Date.now() - ownFiredAt < 700) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+      return;
+    }
     if (fireOwn) { fireOwn = false; return; } // our dispatch — allow through
     if (Date.now() - ownFiredAt < 700) { // native straggler from our tap — swallow
       e.preventDefault();
