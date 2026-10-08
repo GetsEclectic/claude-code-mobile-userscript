@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.164.0
+// @version      1.165.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1244,19 +1244,16 @@ window.__ccmStyleEl = GM_addStyle(`
     background: transparent !important;
     border: 2px dashed var(--ccm-st-off) !important;
   }
-  /* v1.164: the running dot blinks by a JS timer, not a CSS animation.
-     Any infinite CSS animation, even a compositor-only opacity one, keeps the
-     WebView producing a frame every vsync (120/s on the Pixel). Measured
-     2026-10-08 on the Pixel, sidebar open, 3 interleaved reps of 8s, app +
-     renderer CPU: smooth opacity pulse 120-133%, steps(1) blink 37-63%, no
-     pulse 7-17%. The companion below flips html[data-ccm-blink] every 800ms
-     while a running dot exists, so the page repaints ~1x/s instead.
-     History: v1.150-1.158 pulsed box-shadow (main thread every frame), v1.159
-     moved to opacity, v1.160 stopped it in the closed sidebar, v1.163 removed
-     an opacity !important floor that hid it. */
-  html[data-ccm-blink] [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
-    opacity: 0.35 !important;
-  }
+  /* v1.165: the running dot is steady - no pulse, no blink. Any motion cost
+     real CPU in the K4y Code WebView. Measured on the Pixel, sidebar open,
+     3 interleaved reps, app + renderer CPU: smooth CSS opacity pulse
+     120-133% (2026-10-08, session streaming), steps(1) blink 37-63%; on an
+     idle page the v1.164 800ms JS blink 22-35% vs steady 2-33% (median 28%
+     vs 6%). Running is still the loudest row: green dot, green tint, bold
+     title. History: box-shadow pulse (v1.150), opacity pulse (v1.159), off
+     in a closed sidebar (v1.160), !important floor removed (v1.163), JS
+     blink (v1.164). Do not reintroduce motion here without an on-device
+     A/B on an idle page. */
   /* Running rows are the emphasized ones: green tint and a bold primary title.
      The tint is an inset shadow, not a background, so the app's own
      selected-row background still shows underneath it. Offline rows fade. */
@@ -1314,9 +1311,6 @@ window.__ccmStyleEl = GM_addStyle(`
   [data-top-left="true"] [data-ccm-state="running"]::after {
     background: var(--ccm-st-run);
     border: 0;
-  }
-  html[data-ccm-blink] [data-top-left="true"] [data-ccm-state="running"]::after {
-    opacity: 0.35;
   }
   [data-top-left="true"] [data-ccm-state="offline"]::after {
     border: 2px dashed var(--ccm-st-off);
@@ -1556,7 +1550,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.164.0';
+  return '1.165.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -5923,21 +5917,4 @@ window.__ccmVer = (function () {
   window.addEventListener('contextmenu', function (e) {
     if (caretFor(e.target)) e.preventDefault();
   }, true);
-})();
-
-/* v1.164: running-dot blink driver (see the rule 25b note). One html attribute
-   flipped every 800ms: Chromium invalidates only the two selectors that name
-   it, and the page repaints twice per cycle instead of every vsync. Stays off
-   (attribute removed) while the page is hidden, nothing is running, or the
-   user asks for reduced motion. */
-(function () {
-  var RUN = '[data-row][data-ccm-state="running"], [data-top-left="true"] [data-ccm-state="running"]';
-  var rm = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
-  setInterval(function () {
-    var h = document.documentElement;
-    var lit = h.hasAttribute('data-ccm-blink');
-    var want = !lit && !document.hidden && !(rm && rm.matches) && !!document.querySelector(RUN);
-    if (want) h.setAttribute('data-ccm-blink', '');
-    else if (lit) h.removeAttribute('data-ccm-blink');
-  }, 800);
 })();
