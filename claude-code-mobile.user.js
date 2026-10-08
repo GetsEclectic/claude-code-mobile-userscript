@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.162.0
+// @version      1.163.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1216,8 +1216,17 @@ window.__ccmStyleEl = GM_addStyle(`
     min-width: 10px !important;
     border-radius: 50% !important;
     box-sizing: border-box !important;
-    opacity: 1 !important;
     animation: none !important;
+  }
+  /* v1.163: the opacity floor skips running rows. An !important declaration
+     outranks an animation, so with it the running dot never visibly pulsed
+     since v1.159, yet Chromium still ticked the overridden opacity animation
+     on the main thread every frame: 60 recalc/s per open sidebar in headless
+     Chrome, ~30-45% CPU on Ben's tablet with the sidebar left open. Running
+     dots get their opacity from the keyframes (1 -> 0.35), which beat the
+     app's non-important 50%. */
+  [data-row][data-ccm-state]:not([data-ccm-state="running"]) .df-leading-slot > [aria-label] > span {
+    opacity: 1 !important;
   }
   [data-row][data-ccm-state="running"] .df-leading-slot > [aria-label] > span {
     background: var(--ccm-st-run) !important;
@@ -1563,7 +1572,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.162.0';
+  return '1.163.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
