@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.160.0
+// @version      1.161.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -698,6 +698,46 @@ window.__ccmStyleEl = GM_addStyle(`
     min-width: 30px !important;
     min-height: 30px !important;
     border-radius: 9999px !important;
+  }
+
+  /* 13b. v1.161 - the Send split button's caret becomes a long-press (Ben
+     2026-10-07: "the tap target is small because the arrow menu is taking up
+     space, make it a long press action instead"). On a coarse pointer, with a
+     draft in the composer while a turn runs, the app swaps Send for
+     [data-cds="SplitDropdownButton"]: the Send button plus a CaretDown trigger
+     labelled "More send options" (Queue for later / Stop). The caret is a Base
+     UI menu trigger, so it is NOT display:none - its popup anchors to its box
+     (see rule 12d) - it shrinks to an invisible 1px point at Send's bottom-right
+     corner, out of the flow, so Send gets the whole slot and the menu still
+     opens up from where the caret used to be. The companion below opens it on
+     a long-press of Send. Keyed on html[data-ccm-sendhold], which only that
+     companion sets, so with the flag off or the JS dead the caret stays. */
+  html[data-ccm-sendhold] [data-cds="SplitDropdownButton"]:has(button[aria-label="More send options"]) {
+    position: relative !important;
+    gap: 0 !important;
+  }
+  html[data-ccm-sendhold] [data-cds="SplitDropdownButton"] button[aria-label="More send options"] {
+    position: absolute !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 1px !important;
+    height: 1px !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    opacity: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+  }
+  html[data-ccm-sendhold] [data-cds="SplitDropdownButton"]:has(button[aria-label="More send options"]) button[aria-label="Send"] {
+    width: 30px !important;
+    height: 30px !important;
+    border-radius: 9999px !important;
+    -webkit-touch-callout: none !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
   }
 
   /* 14. Transcript spacing is driven by gap-[var(--chat-item-gap)], which the
@@ -1492,6 +1532,7 @@ window.__ccmFlags = (function () {
     upd: f('ccmUpd', true),             // gates the "newer version published" reload chip (v1.135)
     connlost: f('ccmConnLost', true),   // gates hiding the "connection lost" cards/toast (v1.155)
     sessmenu: f('ccmSessMenu', true),   // gates folding Diff/Share/View options + Ship into the chevron menu (v1.156)
+    sendhold: f('ccmSendHold', true),   // gates folding the Send split-button caret into a long-press (v1.161)
   };
 })();
 
@@ -1514,7 +1555,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.160.0';
+  return '1.161.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -5800,4 +5841,73 @@ window.__ccmVer = (function () {
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') check();
   });
+})();
+
+/* v1.161 rule 13b's companion - long-press Send for the "More send options"
+   menu. A hold of HOLD_MS on the split button's Send fires the hidden caret
+   (a programmatic click opens a Base UI menu trigger, same as the v1.139
+   relocations), and then swallows the release so the hold does not also send.
+   Every listener is on window in the CAPTURE phase so it runs before the app's
+   own document-level handlers: the release's click must never reach Send's
+   onClick, and its pointerup/click must not read as an outside press that
+   dismisses the menu it just opened. A tap shorter than HOLD_MS, or a finger
+   that drifts more than SLOP px, is left entirely to the app. */
+(function () {
+  if (!window.__ccmFlags || !window.__ccmFlags.sendhold) return;
+  var HOLD_MS = 450, SLOP = 10;
+  var CARET = 'button[aria-label="More send options"]';
+  document.documentElement.setAttribute('data-ccm-sendhold', '');
+
+  var timer = null, held = false, x0 = 0, y0 = 0;
+
+  function caretFor(t) {
+    if (!t || !t.closest) return null;
+    var send = t.closest('button[aria-label="Send"]');
+    if (!send) return null;
+    var split = send.closest('[data-cds="SplitDropdownButton"]');
+    return split ? split.querySelector(CARET) : null;
+  }
+  function cancel() {
+    if (timer) { clearTimeout(timer); timer = null; }
+  }
+
+  window.addEventListener('pointerdown', function (e) {
+    cancel();
+    held = false;
+    var caret = caretFor(e.target);
+    if (!caret) return;
+    x0 = e.clientX; y0 = e.clientY;
+    timer = setTimeout(function () {
+      timer = null;
+      try { if (navigator.vibrate) navigator.vibrate(12); } catch (err) {}
+      caret.click();  // before held: swallow() would eat this click too
+      held = true;
+    }, HOLD_MS);
+  }, true);
+
+  window.addEventListener('pointermove', function (e) {
+    if (timer && (Math.abs(e.clientX - x0) > SLOP || Math.abs(e.clientY - y0) > SLOP)) cancel();
+  }, true);
+  window.addEventListener('pointercancel', cancel, true);
+
+  function swallow(e) {
+    if (!held) return;
+    if (e.type === 'click') held = false;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+  window.addEventListener('pointerup', function (e) {
+    cancel();
+    if (!held) return;
+    swallow(e);
+    // The release's click normally clears this; if it never comes (the menu
+    // took focus, the WebView ate it), do not swallow some later, real click.
+    setTimeout(function () { held = false; }, 600);
+  }, true);
+  window.addEventListener('mouseup', swallow, true);
+  window.addEventListener('click', swallow, true);
+  // Android fires contextmenu on a long-press; it would select the glyph.
+  window.addEventListener('contextmenu', function (e) {
+    if (caretFor(e.target)) e.preventDefault();
+  }, true);
 })();
