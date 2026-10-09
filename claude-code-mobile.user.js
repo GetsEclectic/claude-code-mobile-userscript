@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.165.0
+// @version      1.166.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1550,7 +1550,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.165.0';
+  return '1.166.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -4356,7 +4356,7 @@ window.__ccmVer = (function () {
     return -1;
   }
 
-  function go(dir) {
+  function go(dir, retried) {
     var id = sessionId();
     if (!id) return;
     // Continue the run on the frozen order; start a fresh one when the run has
@@ -4371,10 +4371,28 @@ window.__ccmVer = (function () {
     }
     snapAt = Date.now();
     if (idx < 0) {
-      // Cold cache, or a session created since the last poll. Ask the companion
-      // for a fresh list so the next swipe works instead of failing twice.
-      toast('Session list not ready');
-      try { if (window.__ccmNavRefresh) window.__ccmNavRefresh(); } catch (e) {}
+      // Cold cache, a session created since the last poll, or one older than
+      // the API's first page. v1.166: ask the companion for a full crawl and
+      // finish THIS swipe when it lands, rather than toasting an error and
+      // making Ben swipe again. One retry only, and only if he is still on the
+      // same session; the second miss says which way it failed.
+      if (retried) {
+        toast(retried === 'ok' ? 'This session is not in your session list'
+          : 'Could not load your session list');
+        return;
+      }
+      var p = null;
+      try { if (window.__ccmNavRefresh) p = window.__ccmNavRefresh(true); } catch (e) {}
+      if (!p || typeof p.then !== 'function') { toast('Could not load your session list'); return; }
+      toast('Loading sessions…');
+      var swipedAt = Date.now();
+      p.then(function (ok) {
+        // A crawl slower than this is a swipe Ben has given up on; landing him
+        // somewhere 10s later would read as the app jumping on its own.
+        if (sessionId() !== id || Date.now() - swipedAt > 8000) return;
+        snap = null;
+        go(dir, ok ? 'ok' : 'fail');
+      });
       return;
     }
     var next = idx + dir;
@@ -4794,7 +4812,7 @@ window.__ccmVer = (function () {
   // because this IIFE already owns the one /v1/sessions poll; a second fetch
   // for the same 380KB payload would double the phone's cost for no new data.
   var NKEY = 'ccmSessionNav';
-  var NAV_MAX = 40;                // deep enough to page through, small in localStorage
+  var NAV_MAX = 100;               // v1.166: 40 -> 100, the agent fleet runs past 40 live sessions; ~8KB
   // Put-away / placeholder statuses never count, regardless of turn state.
   var DROP = { pending: 1, archived: 1, deleted: 1 };
   // Freshness window: a session that is actively running a turn bumps
@@ -4949,13 +4967,25 @@ window.__ccmVer = (function () {
     return Object.keys(unreadCached()).length;
   }
 
-  // The org uuid appears in many app-issued URLs (/api/organizations/<uuid>,
-  // /bootstrap/<uuid>). Harvest it from a request the app has already made, or
-  // from the page HTML as a fallback. Cached once found.
+  // v1.166: the org uuid comes from the app's own lastActiveOrg cookie first.
+  // The old order (resource-timing URLs, then the first uuid anywhere in the
+  // page HTML) broke in the K4y Code WebView, measured on Ben's phone
+  // 2026-10-08: the resource-timing buffer held 3 entries and none named an
+  // org, the first uuid in the HTML was NOT the org, and the real org (the
+  // cookie's) appeared nowhere in the HTML. That guess was cached
+  // for the page's life, so every poll went out under the wrong org and
+  // ccmSessionNav froze - the swipe module's "Session list not ready".
+  // The cookie is re-read on every call (it follows an org switch) and is
+  // readable at document-start, so the very first poll works. The resource
+  // scan stays as a fallback; a guessed HTML uuid is never used, and a 401/403
+  // drops whatever was cached (see fetchSessions).
   var orgUuid = null;
   function findOrg() {
+    try {
+      var c = /(?:^|;\s*)lastActiveOrg=([0-9a-f-]{36})(?:;|$)/i.exec(document.cookie);
+      if (c) return c[1];
+    } catch (e) {}
     if (orgUuid) return orgUuid;
-    var RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     try {
       var ents = performance.getEntriesByType('resource');
       for (var i = 0; i < ents.length; i++) {
@@ -4963,9 +4993,7 @@ window.__ccmVer = (function () {
         if (m) { orgUuid = m[1]; return orgUuid; }
       }
     } catch (e) {}
-    var h = (document.documentElement.innerHTML.match(RE) || [])[0];
-    if (h) orgUuid = h;
-    return orgUuid;
+    return null;
   }
 
   function paint() {
@@ -5210,25 +5238,90 @@ window.__ccmVer = (function () {
   }
   window.__ccmPaintRows = paintRows;
 
-  // Fetch the session list and recompute the cached count. On any failure
-  // (no org yet, network, non-200, bad JSON) we leave the cache untouched so
-  // the badge keeps showing the last good number rather than blanking.
-  function refresh() {
+  // v1.166: /v1/sessions is PAGED - 200 sessions per page, newest-created
+  // first, with {has_more, last_id} and ?after_id=<last_id> for the next page
+  // (measured 2026-10-08: 1137 sessions over 6 pages; ?limit caps at 100 and
+  // no status filter param is honoured). Reading only page 1 dropped every live
+  // session created before the newest 200, so swiping from one hit "not in
+  // list". A full crawl is 5-6x the bytes of one page, so it runs on a cold
+  // load, every TAIL_MS, and on demand (a swipe that missed); the 45s poll
+  // re-reads page 1 only and merges in the live sessions the last crawl found
+  // further back. Those are by construction old ones, so a 10-minute-stale
+  // state for them is the price of not crawling every 45s.
+  var PAGE_MAX = 10;               // 2000 sessions; beyond that is history
+  var TAIL_MS = 600000;
+  var tail = [];                   // live sessions found beyond page 1
+  var tailAt = 0;
+  function sessionsArr(j) {
+    var arr = j && (Array.isArray(j) ? j : (j.sessions || j.data || j.results));
+    return Array.isArray(arr) ? arr : null;
+  }
+  // Resolves to the merged session array, or null on any failure (no org,
+  // network, non-200, bad JSON, or a failed later page - a partial crawl would
+  // silently drop sessions, which is the bug this replaces).
+  function fetchSessions(org, deep) {
+    function page(after) {
+      return fetch('https://claude.ai/v1/sessions'
+        + (after ? '?after_id=' + encodeURIComponent(after) : ''), {
+        credentials: 'include',
+        headers: {
+          'anthropic-organization-uuid': org,
+          'anthropic-client-platform': 'web_claude_ai',
+          'anthropic-version': '2023-06-01',
+        },
+      }).then(function (r) {
+        if (r.status === 401 || r.status === 403) orgUuid = null;   // stale org guess
+        return r.ok ? r.json() : null;
+      });
+    }
+    return page(null).then(function (j) {
+      var first = sessionsArr(j);
+      if (!first) return null;
+      if (!deep) {
+        var seen = {};
+        for (var i = 0; i < first.length; i++) if (first[i] && first[i].id) seen[first[i].id] = 1;
+        return first.concat(tail.filter(function (s) { return !seen[s.id]; }));
+      }
+      var all = first.slice(), rest = [], n = 1, ids = {};
+      for (var k = 0; k < first.length; k++) if (first[k] && first[k].id) ids[first[k].id] = 1;
+      function more(prev) {
+        if (!prev || !prev.has_more || !prev.last_id || n >= PAGE_MAX) {
+          tail = rest.filter(function (s) { return !DROP[s.session_status]; });
+          tailAt = Date.now();
+          return all;
+        }
+        n++;
+        return page(prev.last_id).then(function (pj) {
+          var arr = sessionsArr(pj);
+          if (!arr) return null;
+          // Only sessions not already seen count, and a page that adds none
+          // ends the crawl - so a cursor the endpoint ignored can neither
+          // duplicate rows nor spin to PAGE_MAX.
+          var fresh = arr.filter(function (s) { return s && s.id && !ids[s.id] && (ids[s.id] = 1); });
+          if (!fresh.length) return more(null);
+          all = all.concat(fresh);
+          rest = rest.concat(fresh);
+          return more(pj);
+        });
+      }
+      return more(j);
+    });
+  }
+
+  // Fetch the session list and recompute the cached count. On any failure we
+  // leave the cache untouched so the badge keeps showing the last good number
+  // rather than blanking. Returns a promise of true (caches rewritten) or false,
+  // so the swipe module can retry a missed swipe once the list is fresh.
+  // Concurrent callers (focus + visibilitychange + a swipe) share one fetch,
+  // unless a deep crawl is asked for while a shallow one is in flight.
+  var inflight = null, inflightDeep = false;
+  function refresh(deep) {
+    deep = deep === true || !tailAt || (Date.now() - tailAt) > TAIL_MS;
+    if (inflight && (inflightDeep || !deep)) return inflight;
     var org = findOrg();
-    if (!org) return;
-    fetch('https://claude.ai/v1/sessions', {
-      credentials: 'include',
-      headers: {
-        'anthropic-organization-uuid': org,
-        'anthropic-client-platform': 'web_claude_ai',
-        'anthropic-version': '2023-06-01',
-      },
-    }).then(function (r) {
-      return r.ok ? r.json() : null;
-    }).then(function (j) {
-      if (!j) return;
-      var arr = Array.isArray(j) ? j : (j.sessions || j.data || j.results);
-      if (!Array.isArray(arr)) return;
+    if (!org) return Promise.resolve(false);
+    var p = fetchSessions(org, deep).then(function (arr) {
+      if (!arr) return false;
       var n = 0;
       var map = {};
       var ages = {};
@@ -5267,7 +5360,12 @@ window.__ccmVer = (function () {
         // Swipe order (v1.113). state===null is exactly the archived/deleted/
         // pending set, so those never become swipe destinations. s.id is the
         // route segment: /code/<id> (measured 2026-07-25 against the live API).
-        if (state && s.id) nav.push({ i: s.id, t: nm || 'Untitled', u: isNaN(ts) ? 0 : ts });
+        // v1.166: keyed on DROP, not on state. state is ALSO null for a live
+        // idle session in status_bucket 'completed' (BUCKET_STATE maps it to
+        // null so the dots leave it as the app drew it) - measured 2026-10-08,
+        // 3 of 15 live sessions - and those were never swipe destinations, so
+        // swiping from a finished session always hit "not ready".
+        if (s.id && !DROP[s.session_status]) nav.push({ i: s.id, t: nm || 'Untitled', u: isNaN(ts) ? 0 : ts });
       }
       // The endpoint's own ordering is not a contract (see block comment), and
       // it demonstrably is NOT updated_at-sorted, so sort client-side: newest
@@ -5283,7 +5381,13 @@ window.__ccmVer = (function () {
       if (nav.length) { try { localStorage.setItem(NKEY, JSON.stringify(nav)); } catch (e) {} }
       paint();
       paintRows();
-    }).catch(function () {});
+      return true;
+    }).catch(function () { return false; }).then(function (ok) {
+      if (inflight === p) { inflight = null; inflightDeep = false; }
+      return ok;
+    });
+    inflight = p; inflightDeep = deep;
+    return p;
   }
 
   var pending = false;
