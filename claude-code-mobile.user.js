@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.166.0
+// @version      1.167.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1267,18 +1267,68 @@ window.__ccmStyleEl = GM_addStyle(`
   [data-row][data-ccm-state="offline"] [data-row-label] {
     opacity: 0.6 !important;
   }
-  /* The age. Small plain text right of the flex-1 title, clear of the
-     always-visible kebab (52px = its rendered 44px + 8px gap, see rule 30).
-     Rows with no age (running, or nothing cached yet) still get the empty
-     box so every title stops at the same place before the kebab. */
+  /* v1.167: two-line titles, age under the dot (Ben 2026-10-08, on the
+     now-resizable tablet sidebar: "redesign the sidebar to show more session
+     name at narrower widths"). Measured on the 2026-09-15 WebView fixture at a
+     240px sidebar: the title got 107px of a 213px row - the rest went to the
+     dot slot, the age text, and the 52px kebab reserve (rule 30). So the title
+     now wraps to two lines instead of truncating, and the age moves out of
+     the title's line into the leading column, under the dot, the way a mail
+     client stacks a date. At 240px that is two ~120px lines instead of one
+     107px line; at 360px, two ~240px lines.
+
+     Rows grow to fit (a two-line row is ~52px, a one-line row stays at the
+     42px finger floor). The kebab is centred on the row by the app, so it
+     stays reachable whatever the height. Only state-stamped rows change, so
+     the nav rows (New session, Routines...) and a row painted before the
+     first state fetch keep the app's own layout. */
+  [data-row][data-ccm-state] > [data-row-main-button] {
+    position: relative !important;
+    height: auto !important;
+    min-height: 42px !important;
+    align-items: flex-start !important;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+    /* The kebab's rendered 44px + 8px gap (rule 30): the title stops here. */
+    padding-right: 52px !important;
+  }
+  [data-row][data-ccm-state] > [data-row-main-button] > .df-leading-slot {
+    /* Top-aligned with the first title line; the age hangs below it. */
+    height: 20px !important;
+    min-width: 24px !important;
+  }
+  /* .group:has(...) matches rule 30's specificity plus one, which it needs:
+     rule 30 comes later in this sheet and would otherwise keep its fade. */
+  [data-row][data-ccm-state].group:has([data-row-action]) [data-row-label] .dframe-fade-label,
+  [data-row][data-ccm-state] [data-row-label] .dframe-fade-label {
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+    display: -webkit-box !important;
+    -webkit-box-orient: vertical !important;
+    -webkit-line-clamp: 2 !important;
+    line-clamp: 2 !important;
+    overflow: hidden !important;
+    line-height: 20px !important;
+    /* Rule 30's hover/pinned fade was for a title running under the kebab;
+       the padding above keeps it clear now, and an ellipsis on line 2 says
+       "more" better than a fade. */
+    mask-image: none !important;
+    -webkit-mask-image: none !important;
+  }
+  /* The age: small text under the dot, in the state colour. Rows with no age
+     (running, or nothing cached yet) show nothing there. */
   [data-row-main-button][data-ccm-state]::after {
     content: attr(data-ccm-age);
-    flex: 0 0 auto;
-    margin-left: 6px;
-    margin-right: 52px;
-    font-size: 12px;
+    position: absolute;
+    top: 26px;
+    left: 0;
+    width: calc(24px + 2 * var(--df-row-px, 2px));
+    text-align: center;
+    font-size: 11px;
+    line-height: 13px;
     font-weight: 500;
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.2px;
     white-space: nowrap;
     pointer-events: none;
     color: var(--ccm-st-idle);
@@ -1289,12 +1339,6 @@ window.__ccmStyleEl = GM_addStyle(`
   }
   [data-row-main-button][data-ccm-state="offline"]::after {
     color: var(--ccm-st-off);
-  }
-  /* The title now ends before the age, so rule 30's 44px fade (sized for a
-     title running under the kebab) only ate real characters. Keep a short
-     edge fade for titles that still overflow. */
-  [data-row][data-ccm-state].group:has([data-row-action]) .dframe-fade-label {
-    mask-image: linear-gradient(to right, black calc(100% - 14px), transparent 100%) !important;
   }
   /* Header: the open session's title gets a small dot in the state colour. */
   [data-top-left="true"] [data-ccm-state]::after {
@@ -1550,7 +1594,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.166.0';
+  return '1.167.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
