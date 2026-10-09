@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.168.0
+// @version      1.169.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,11 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.169: tablet composer (>= 700px): the text spans the pill and every control -
+   the "+" proxy, the chin's dictate / permission / K4y menu / model / effort / usage
+   buttons and Send - sits in ONE 44px band under it, centred on one line, with the
+   controls at 36px / 15px instead of the phone's 32px / 14px (CSS rule 31).
 
    v1.158: v1.157's focus swallow was not enough on the real page: claude.ai's cds sheet
    sets inert + data-cds-sheet-inert on the focused composer ~20ms after the menu opens,
@@ -1591,6 +1596,113 @@ window.__ccmStyleEl = GM_addStyle(`
       transparent calc(100% - 20px)
     ) !important;
   }
+
+  /* 31. Tablet composer: one control row (v1.169, Ben 2026-10-08 on the SM-X520
+     at 823 CSS px: "The bottom of k4y code should be one, aligned, row" and
+     "the buttons could be a bit bigger at this screen size").
+
+     The phone layout spends its one input row on the "+" proxy (rule 18c) and
+     Send (the app's own absolute bottom-right box) and leaves every other
+     control in the chin BELOW the pill, outside it. Measured on the tablet with
+     v1.168: + and Send centred at y=1205, the chin controls at y=1249-1250 - two
+     half rows of controls, 44px apart, with the chin's buttons the smallest
+     text on the screen (14px, 32px tall after rule 16's compaction).
+
+     At tablet width there is no vertical budget to save, so lay the pill out the
+     way claude.ai's own desktop composer does: the text on top, spanning the
+     full width, and ONE 44px band under it inside the pill holding, left to
+     right, the "+" proxy, the chin's controls (dictate / permission mode / K4y
+     menu / model / effort / usage) and Send, all vertically centred on the same
+     line. Mechanics, each keyed on a data-cds hook or our own id:
+     - the editor row (the div hosting #ccm-add-proxy and ChatComposerActions)
+       reserves the band as 44px of bottom padding; its text wrapper drops the
+       36px lead and 40px trail it kept for the two flanking buttons;
+     - the proxy stays absolute in that row (rule 18c) but drops to the band,
+       bottom:4px centring its 36px disc in 44px; Send's absolute wrapper grows
+       to the band's height (items-center does the rest) and Send goes 30->36px;
+     - the chin is pulled up INTO the band with margin-top: -(8px pill padding +
+       44px band). Its stock -mx-2/px-2 become 44px side margins so its box
+       starts to the right of the proxy and ends to the left of Send: the chin
+       must sit ABOVE the pill (z-index 2 over the pill's z-[1]) to paint over the
+       pill's background at all, so any horizontal overlap with the proxy or
+       Send would also steal their taps - the margins make overlap impossible,
+       and test_tablet_composer.py hit-tests both buttons to prove it;
+     - the chin row's min-height becomes the band and its left group loses the
+       app's self-start so both groups centre on the same line (the 1px offset
+       measured between the two groups came from that self-start).
+     Buttons: the chin's controls go to 36px tall / 15px text (from 32px / 14px
+     after rule 16, which this out-specifies), the proxy and Send to 36px discs,
+     the K4y menu button's inline 32x26 to 36x36.
+
+     700px is the floor: a phone never reaches it (412-430px) and the tablet is
+     823px with the sidebar open or closed. Below it the phone layout stands.
+     The grid-template-rows override is because the chin's inner grid pins its
+     measured row height (34px) for its collapse animation, and the chin clips
+     overflow - a 44px band inside a 34px grid would be cut off at 34. */
+  @media (min-width: 700px) {
+    [data-cds="ChatComposer"] div:has(> #ccm-add-proxy) {
+      padding-bottom: 44px !important;
+    }
+    [data-cds="ChatComposer"] div:has(> #ccm-add-proxy) > div:not([data-cds]) {
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+    }
+    .epitaxy-prompt div:has(> #ccm-add-proxy) > .epitaxy-prompt-input + span[aria-hidden="true"] {
+      left: 0 !important;
+    }
+    [data-cds="ChatComposer"] #ccm-add-proxy {
+      width: 36px !important;
+      height: 36px !important;
+      margin-left: 0 !important;
+      bottom: 4px !important;
+    }
+    [data-cds="ChatComposer"] div:has(> #ccm-add-proxy) > [data-cds="ChatComposerActions"] > div {
+      height: 44px !important;
+      min-height: 44px !important;
+      bottom: 0 !important;
+      padding-left: 0 !important;
+    }
+    /* The repeated [aria-label] only raises specificity past rule 13b's
+       (0,4,3) sendhold selector, which pins Send to 30px. */
+    [data-cds="ChatComposer"] [data-cds="ChatComposerActions"] button[aria-label="Send"][aria-label][aria-label],
+    [data-cds="ChatComposer"] [data-cds="ChatComposerActions"] button[aria-label="Stop"][aria-label][aria-label] {
+      width: 36px !important;
+      height: 36px !important;
+      min-width: 36px !important;
+      min-height: 36px !important;
+    }
+    [data-cds="ChatComposer"] > [data-cds="ChatComposerChin"] {
+      margin: -52px 44px 0 44px !important;
+      padding: 0 8px !important;
+      z-index: 2 !important;
+      overflow: visible !important;
+      grid-template-rows: auto !important;
+    }
+    [data-cds="ChatComposer"] > [data-cds="ChatComposerChin"] > div {
+      grid-template-rows: auto !important;
+    }
+    [data-cds="ChatComposerChin"] div:has(> div > button[aria-label="Add"]) {
+      min-height: 44px !important;
+      margin-top: 0 !important;
+      padding: 0 !important;
+    }
+    [data-cds="ChatComposerChin"] div:has(> div > button[aria-label="Add"]) > div {
+      align-self: center !important;
+    }
+    [data-cds="ChatComposer"] [data-cds="ChatComposerChin"] button,
+    [data-cds="ChatComposer"] [data-cds="ChatComposerChin"] [role="button"] {
+      min-height: 36px !important;
+      font-size: 15px !important;
+    }
+    [data-cds="ChatComposerChin"] button[aria-label="Dictate"],
+    [data-cds="ChatComposerChin"] button[aria-label^="Usage"] {
+      min-width: 36px !important;
+    }
+    [data-cds="ChatComposerChin"] #k4y-menu-button {
+      width: 36px !important;
+      height: 36px !important;
+    }
+  }
 }
 `);
 /* v1.46 bisect: ccmCss=0 removes the entire stylesheet (keeps companion JS),
@@ -1645,7 +1757,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.168.0';
+  return '1.169.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
