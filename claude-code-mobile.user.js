@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.167.0
+// @version      1.168.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1282,20 +1282,62 @@ window.__ccmStyleEl = GM_addStyle(`
      stays reachable whatever the height. Only state-stamped rows change, so
      the nav rows (New session, Routines...) and a row painted before the
      first state fetch keep the app's own layout. */
+  /* v1.168: the "rail" layout (Ben 2026-10-08, on v1.167: "There's a ton of
+     unnecessary padding and wasted space", then picked design B from three
+     mocks). Measured on the fixture at a 240px sidebar, the v1.167 title got
+     123px: 8px body padding, a 28px dot-and-age column, an 8px gap, a 52px
+     kebab reserve and a 16px grip strip took the rest. Now the dot is gone
+     and the state is a 3px coloured left edge on the row (green running,
+     amber unread, faded red offline, none for idle). The kebab shrinks to a
+     28x24 button in the row's top-right corner, and the age sits under it.
+     Title at 240px: 186px. */
   [data-row][data-ccm-state] > [data-row-main-button] {
     position: relative !important;
     height: auto !important;
     min-height: 42px !important;
     align-items: flex-start !important;
-    padding-top: 6px !important;
-    padding-bottom: 6px !important;
-    /* The kebab's rendered 44px + 8px gap (rule 30): the title stops here. */
-    padding-right: 52px !important;
+    gap: 0 !important;
+    padding-top: 5px !important;
+    padding-bottom: 5px !important;
+    padding-left: 9px !important;
+    /* The 28px kebab column plus a 2px gap: the title stops here. */
+    padding-right: 30px !important;
   }
   [data-row][data-ccm-state] > [data-row-main-button] > .df-leading-slot {
-    /* Top-aligned with the first title line; the age hangs below it. */
-    height: 20px !important;
-    min-width: 24px !important;
+    display: none !important;
+  }
+  [data-row][data-ccm-state="unread"] {
+    box-shadow: inset 3px 0 0 var(--ccm-st-new) !important;
+  }
+  [data-row][data-ccm-state="running"] {
+    box-shadow: inset 3px 0 0 var(--ccm-st-run),
+      inset 0 0 0 100vmax color-mix(in srgb, var(--ccm-st-run) 16%, transparent) !important;
+  }
+  [data-row][data-ccm-state="offline"] {
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--ccm-st-off) 60%, transparent) !important;
+  }
+  /* The kebab: pinned top-right instead of centred, so the age fits under
+     it. The app centres its wrapper with top:50% plus a Tailwind translate,
+     so both transform and translate are cleared. */
+  [data-row][data-ccm-state] > div:has(> [data-row-action]) {
+    top: 4px !important;
+    right: 0 !important;
+    bottom: auto !important;
+    transform: none !important;
+    translate: none !important;
+    height: 24px !important;
+  }
+  [data-row][data-ccm-state] > div > [data-row-action] {
+    width: 28px !important;
+    min-width: 28px !important;
+    height: 24px !important;
+    min-height: 24px !important;
+    padding: 0 !important;
+  }
+  /* The sidebar's own left padding: 8px down to 2px. The right side is the
+     K4y Code drag grip's strip. */
+  .dframe-sidebar-body {
+    padding-left: 2px !important;
   }
   /* .group:has(...) matches rule 30's specificity plus one, which it needs:
      rule 30 comes later in this sheet and would otherwise keep its fade. */
@@ -1315,14 +1357,23 @@ window.__ccmStyleEl = GM_addStyle(`
     mask-image: none !important;
     -webkit-mask-image: none !important;
   }
-  /* The age: small text under the dot, in the state colour. Rows with no age
-     (running, or nothing cached yet) show nothing there. */
+  /* v1.168: the live app wraps the title text in its own
+     span.inline-block.whitespace-nowrap inside .dframe-fade-label, so on
+     Ben's tablet the v1.167 clamp above applied and the title still sat on
+     one clipped line (read off the tablet's WebView over CDP, 2026-10-08).
+     The 2026-09-15 fixture predates that span. */
+  [data-row][data-ccm-state] [data-row-label] .dframe-fade-label > span {
+    display: inline !important;
+    white-space: normal !important;
+  }
+  /* The age: small text under the kebab, in the state colour. Rows with no
+     age (running, or nothing cached yet) show nothing there. */
   [data-row-main-button][data-ccm-state]::after {
     content: attr(data-ccm-age);
     position: absolute;
-    top: 26px;
-    left: 0;
-    width: calc(24px + 2 * var(--df-row-px, 2px));
+    bottom: 6px;
+    right: 0;
+    width: 28px;
     text-align: center;
     font-size: 11px;
     line-height: 13px;
@@ -1594,7 +1645,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.167.0';
+  return '1.168.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
