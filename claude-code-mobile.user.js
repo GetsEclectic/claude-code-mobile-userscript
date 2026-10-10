@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.170.0
+// @version      1.171.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,9 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.171: rule 32 also covers the live text wordmark (span in
+   [data-cds="ProductLogo"]), which v1.170's svg-only selector missed.
 
    v1.170: the sidebar wordmark reads "K4y Code" instead of Claude's "Claude Code"
    logo (CSS rule 32).
@@ -1707,17 +1710,33 @@ window.__ccmStyleEl = GM_addStyle(`
     }
   }
 
-  /* 32. Sidebar wordmark reads "K4y Code", not "Claude Code" (v1.170, Ben
-     2026-10-10 on the tablet: "We should modify or replace the claude code
+  /* 32. Sidebar wordmark reads "K4y Code", not "Claude Code" (v1.170-1.171,
+     Ben 2026-10-10 on the tablet: "We should modify or replace the claude code
      logo in k4y code", pointing at the wordmark atop the sidebar).
 
-     The wordmark is one svg[data-cds="ClaudeLogo"] (fill currentColor) inside
-     the a[href="/new"] home link. Hide the svg (and anything else inside the
-     link) and draw the text as the link's own ::after, so the link keeps its
-     tap target and its aria-label. Any non-interactive sibling of the link (a separate "Code" label, if a build
-     splits the wordmark in two) is hidden with it; anything holding a button
-     or link is left alone. Serif, primary text colour, 20px line box: the
-     same height the svg occupied, so the header row does not move. */
+     Two builds, two shapes:
+     - live since at least 2026-10-10 (read off the tablet over CDP): plain
+       text, span "Claude Code" inside div[data-cds="ProductLogo"]
+       [data-app-wordmark="code"] inside the a[href="/new"] home link, with
+       its font set inline (font-voice serif, 20px, wght 500, ss01/dlig). The
+       span's own glyphs go to font-size 0 and its ::after draws "K4y Code";
+       the pseudo-element inherits every inline font setting, so only the size
+       and the -0.1em optical nudge need restating. v1.170 targeted only the
+       svg shape below and so missed this one on the device.
+     - the 2026-09-15 fixture: one svg[data-cds="ClaudeLogo"] in that link.
+       Hide it (and anything else inside the link) and draw the text as the
+       link's own ::after.
+     Either way the link keeps its tap target. Only the "code" wordmark is
+     touched; any other app's ProductLogo is left alone. */
+  [data-cds="ProductLogo"][data-app-wordmark="code"] > span {
+    font-size: 0 !important;
+    margin-left: 0 !important;
+  }
+  [data-cds="ProductLogo"][data-app-wordmark="code"] > span::after {
+    content: "K4y Code";
+    font-size: 20px;
+    margin-left: -0.1em;
+  }
   a:has(> svg[data-cds="ClaudeLogo"]) > *,
   :has(> a > svg[data-cds="ClaudeLogo"]) > :not(a):not(:has(a, button, [role="button"])) {
     display: none !important;
@@ -1786,7 +1805,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.170.0';
+  return '1.171.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
