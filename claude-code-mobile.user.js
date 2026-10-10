@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.169.0
+// @version      1.170.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,9 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.170: the sidebar wordmark reads "K4y Code" instead of Claude's "Claude Code"
+   logo (CSS rule 32).
 
    v1.169: tablet composer (>= 700px): the text spans the pill and every control -
    the "+" proxy, the chin's dictate / permission / K4y menu / model / effort / usage
@@ -1703,6 +1706,32 @@ window.__ccmStyleEl = GM_addStyle(`
       height: 36px !important;
     }
   }
+
+  /* 32. Sidebar wordmark reads "K4y Code", not "Claude Code" (v1.170, Ben
+     2026-10-10 on the tablet: "We should modify or replace the claude code
+     logo in k4y code", pointing at the wordmark atop the sidebar).
+
+     The wordmark is one svg[data-cds="ClaudeLogo"] (fill currentColor) inside
+     the a[href="/new"] home link. Hide the svg (and anything else inside the
+     link) and draw the text as the link's own ::after, so the link keeps its
+     tap target and its aria-label. Any non-interactive sibling of the link (a separate "Code" label, if a build
+     splits the wordmark in two) is hidden with it; anything holding a button
+     or link is left alone. Serif, primary text colour, 20px line box: the
+     same height the svg occupied, so the header row does not move. */
+  a:has(> svg[data-cds="ClaudeLogo"]) > *,
+  :has(> a > svg[data-cds="ClaudeLogo"]) > :not(a):not(:has(a, button, [role="button"])) {
+    display: none !important;
+  }
+  a:has(> svg[data-cds="ClaudeLogo"])::after {
+    content: "K4y Code";
+    font-family: var(--font-anthropic-serif, Georgia, serif);
+    font-size: 22px;
+    font-weight: 500;
+    line-height: 20px;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    color: var(--cds-text-primary, currentColor);
+  }
 }
 `);
 /* v1.46 bisect: ccmCss=0 removes the entire stylesheet (keeps companion JS),
@@ -1757,7 +1786,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.169.0';
+  return '1.170.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
