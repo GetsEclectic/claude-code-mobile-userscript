@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.172.0
+// @version      1.173.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,8 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.173: the composer's dictation (mic) button is hidden (CSS rule 33).
 
    v1.172: the tablet (>= 700px) uses the phone composer again - "+", text and Send in the
    pill, controls in the row under it - at 36px / 15px; v1.169's single band is retired (with
@@ -1671,6 +1673,19 @@ window.__ccmStyleEl = GM_addStyle(`
     white-space: nowrap;
     color: var(--cds-text-primary, currentColor);
   }
+
+  /* 33. No dictation button (v1.173, Ben 2026-10-14: "Let's hide the dictation
+     button also"). The 2026-10 composer puts Dictate (and, on some builds, a
+     "Dictation settings" split half) in ChatComposerActions' trailing box after
+     Send; older builds had it in the chin. Its wrapper span goes too, so no
+     empty gap is left beside Send. The app sizes the text's trailing reserve
+     (--cmp-trail-w) from that box with a ResizeObserver, so the reserve shrinks
+     with it. */
+  [data-cds="ChatComposer"] button[aria-label="Dictate"],
+  [data-cds="ChatComposer"] button[aria-label="Dictation settings"],
+  [data-cds="ChatComposer"] :has(> button[aria-label="Dictate"]):not(:has([data-testid="code-prompt-send-cell"], [aria-label="Send"], [aria-label="Stop"])) {
+    display: none !important;
+  }
 }
 `);
 /* v1.46 bisect: ccmCss=0 removes the entire stylesheet (keeps companion JS),
@@ -1725,7 +1740,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.172.0';
+  return '1.173.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
