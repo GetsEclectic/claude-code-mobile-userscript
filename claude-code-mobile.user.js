@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.173.0
+// @version      1.174.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -1740,7 +1740,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.173.0';
+  return '1.174.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -2083,7 +2083,18 @@ window.__ccmVer = (function () {
      Refusals, each logged as CCM_SHIP ok=false reason=... and NEVER carrying the
      composer's contents: no composer on the page, a turn streaming (Enter would
      STEER it, not start a run), a draft already in the composer (never
-     clobbered), or the insertion not taking. */
+     clobbered), or the insertion not taking.
+
+     v1.174 (Ben 2026-10-17: "the ship button is no longer pressing send"): the
+     live Send is never disabled any more (read off the WebView: no disabled prop,
+     no aria-disabled, no testid), so the poll clicked it in the same tick as the
+     insertText. ProseMirror only reads the typed text back from its
+     MutationObserver, so the click submitted an empty doc, nothing was sent and
+     the marker still said ok=true. Reproduced against a real ProseMirror editor.
+     Now the first poll is deferred, and Send waits until the composer's own
+     data-doc-empty flag (TipTap's, from editor state) has gone false. Send and
+     Stop are also cross-faded twins: the hidden one stays mounted, laid out, in
+     an inert aria-hidden wrapper, so a match inside one never counts. */
   var SHIP_TEXT = '/ship';
   // Tried in order, never as one comma list: querySelector on a list returns the
   // first match in DOCUMENT order, so a stray aria-label match earlier in the page
@@ -2095,6 +2106,18 @@ window.__ccmVer = (function () {
     for (var i = 0; i < sels.length; i++) {
       var el = document.querySelector(sels[i]);
       if (el) return el;
+    }
+    return null;
+  }
+  // Laid out, enabled, and not the hidden half of a cross-fade.
+  function shipLive(el) {
+    return el.offsetParent !== null && !el.disabled &&
+      !el.closest('[inert],[aria-hidden="true"]');
+  }
+  function firstLive(sels) {
+    for (var i = 0; i < sels.length; i++) {
+      var list = document.querySelectorAll(sels[i]);
+      for (var j = 0; j < list.length; j++) if (shipLive(list[j])) return list[j];
     }
     return null;
   }
@@ -2135,9 +2158,14 @@ window.__ccmVer = (function () {
     function visibleEnabled(sel) {
       var list = document.querySelectorAll(sel);
       for (var i = 0; i < list.length; i++) {
-        if (list[i].offsetParent !== null && !list[i].disabled) return list[i];
+        if (shipLive(list[i])) return list[i];
       }
       return null;
+    }
+    // Absorbed = the editor's state, not just its DOM, holds the text. A composer
+    // without the flag (an older build) counts as absorbed once a tick has passed.
+    function absorbed() {
+      return composer.getAttribute('data-doc-empty') !== 'true';
     }
     var composer = shipFind(SHIP_COMPOSER);
     if (!composer) return report(false, 'no-composer');
@@ -2147,9 +2175,9 @@ window.__ccmVer = (function () {
     try { document.execCommand('insertText', false, SHIP_TEXT); } catch (e) { /* checked below */ }
     if (textOf(composer) !== SHIP_TEXT) return report(false, 'insert-failed');
     var waited = 0;
-    (function submit() {
-      var send = shipFind(SHIP_SEND);
-      if (send && !send.disabled) {
+    function submit() {
+      var send = firstLive(SHIP_SEND);
+      if (send && absorbed()) {
         send.click();
         return report(true, null, 'click');
       }
@@ -2161,7 +2189,8 @@ window.__ccmVer = (function () {
       }
       waited += SHIP_POLL_MS;
       setTimeout(submit, SHIP_POLL_MS);
-    })();
+    }
+    setTimeout(submit, SHIP_POLL_MS);
   }
 
   /* The visible label of a native menu item: its first non-empty text node with
