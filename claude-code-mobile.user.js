@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.174.0
+// @version      1.175.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -276,10 +276,19 @@ window.__ccmStyleEl = GM_addStyle(`
      app uses that pattern - including any element the next rename introduces,
      which is the whole point. The class list below stays as a belt-and-braces
      fallback for a view still rendering an older hook. */
+  /* v1.175: the 2026-10 session-rail layout positions the column and composer
+     with its own --session-rail-g, which defaults to 24px through an unset
+     --session-rail-gutter and is copied into --chat-gutter-start on the panel,
+     so the 4px start above stopped reaching it. On Ben's 448px phone the
+     composer sat 33px from the left and 13px from the right (Ben 2026-10-20:
+     "The left and right margins aren't even"). The 33 is a 9px tiles-shell
+     inset plus the 24px rail gutter; 4px brings the left to 13px, matching the
+     right (measured live on the phone, composer and prose both 13/13). */
   :root {
     --chat-gutter: 4px;
     --chat-gutter-start: 4px;
     --chat-gutter-end: 12px;
+    --session-rail-gutter: 4px;
   }
   /* The :root block above reclaims the LEFT gutter only (32px -> 4px, measured
      live 2026-08-28). The right one survives it because the app declares
@@ -1740,7 +1749,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.174.0';
+  return '1.175.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
