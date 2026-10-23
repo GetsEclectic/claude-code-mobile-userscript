@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Code — mobile UI fixes
 // @namespace    https://claude.ai/code
-// @version      1.175.0
+// @version      1.176.0
 // @description  Bigger tap targets, larger fonts, and a tighter layout for the claude.ai/code web client on phones. Moves the composer "+" inline beside the input. Keeps the layout aligned across soft-keyboard open/close via interactive-widget=resizes-content (Firefox Android 132+; Chromium already behaves this way). Auto-dismisses the sidebar drawer after a nav-row tap. Keeps the soft keyboard down when switching into a session so the history is readable. Swipe left/right anywhere in the transcript to page through your sessions, newest first. Disables the app's custom right-click/long-press menu so the native browser menu shows. Includes optional, OPT-IN, end-to-end-encrypted diagnostics that are DISABLED by default and send nothing unless you point them at your own endpoint via localStorage (no server or token is baked into this script).
 // @match        https://claude.ai/code*
 // @run-at       document-start
@@ -17,6 +17,12 @@
    aria-label / data-testid / role hooks, never the hashed epitaxy- / dframe-
    class names. CSS verified by injecting into an emulated 412px viewport
    (scripts/claude_web_dom_dump.py --inject-userjs) before shipping.
+
+   v1.176: new-session guard (Ben 2026-10-23: "I typed that into the new session page in
+   the web ui, why did it go here?"). With a Remote Control environment picked, claude.ai's
+   new-session page does not start a session: Send posts the prompt into that environment's
+   one existing session (see the guard module at the end of this file). The module holds the
+   send and says so.
 
    v1.173: the composer's dictation (mic) button is hidden (CSS rule 33).
 
@@ -1749,7 +1755,7 @@ window.__ccmVer = (function () {
       return String(GM_info.script.version);
     }
   } catch (e) {}
-  return '1.175.0';
+  return '1.176.0';
 })();
 
 /* Relocate the top-bar action icons into the "Session actions" kebab menu.
@@ -6248,5 +6254,104 @@ window.__ccmVer = (function () {
   // Android fires contextmenu on a long-press; it would select the glyph.
   window.addEventListener('contextmenu', function (e) {
     if (caretFor(e.target)) e.preventDefault();
+  }, true);
+})();
+
+/* v1.176 - new-session guard.
+
+   Ben 2026-10-23 (twice, 2026-10-22 and 10-23): typed a prompt on the New session
+   page, sent it, and it landed in an EXISTING bridge session; the Dell rc-server
+   logged no spawn request.
+
+   NOT this userscript, and not the previous session: reproduced on a fresh Chromium
+   profile with no userscript and no history (2026-10-23, CDP Fetch interception so
+   nothing reached the server). On claude.ai/code, picking a Remote Control
+   environment on the New session page and pressing Send makes the app POST
+   /v1/code/sessions/cse_<id>/events to that environment's existing session - no
+   POST /v1/sessions, so no new session and nothing for the rc-server to spawn. The
+   picker's own submenu says why: "src-d7 - 1 of 1 session - Social media posts fo...
+   [End session]". A bridge environment is a single-session thing to this app. The
+   page preselects the previous session's environment when you reach it from a
+   session's drawer, which is why it looked like "the session I had open".
+
+   The harm is the silent part: the prompt goes into a live session that was doing
+   something else. So on the New session page (path /code) with a Remote Control
+   environment showing in the environment bar, Send and Enter are held with a toast
+   that says what would happen. A second Send within 8s (after a 0.7s beat, so a
+   double tap cannot trip it) goes through for the times that is the intent.
+
+   Detection: the bar's trigger reads "<name> · <machine>" for a Remote Control
+   environment and a bare name for a cloud one ("Default Cloud Environment").
+   Kill switch: localStorage ccmNewSessionGuard = '0'. */
+(function () {
+  var flagOn = true;
+  try { flagOn = localStorage.getItem('ccmNewSessionGuard') !== '0'; } catch (e) {}
+  if (!flagOn) return;
+
+  var SEND = '[data-testid="code-prompt-send"]';
+  var INPUT = '[data-testid="code-prompt-input"], [aria-label="Prompt"][contenteditable="true"]';
+  var TRIGGER = '[data-testid="environment-bar-trigger"]';
+  var ARM_MIN = 700, ARM_MAX = 8000;
+  var armedAt = 0, toastEl = null, toastTimer = 0;
+
+  function onNewSessionPage() { return /^\/code\/?$/.test(location.pathname); }
+
+  // The Remote Control environment's label, or null for cloud / unknown.
+  function bridgeEnv() {
+    var t = document.querySelector(TRIGGER);
+    if (!t) return null;
+    var txt = (t.textContent || '').replace(/\s+/g, ' ').trim();
+    return txt.indexOf(' · ') > 0 ? txt.replace(/^[^\w]+/, '') : null;
+  }
+
+  function say(msg) {
+    try {
+      if (!toastEl || !toastEl.isConnected) {
+        toastEl = document.createElement('div');
+        toastEl.id = 'ccm-newsession-guard-toast';
+        toastEl.setAttribute('role', 'alert');
+        toastEl.style.cssText = 'position:fixed;top:56px;left:50%;transform:translateX(-50%);'
+          + 'width:90vw;max-width:420px;box-sizing:border-box;white-space:normal;'
+          + 'background:rgba(40,28,8,0.96);color:#ffe3a3;border:1px solid #c9922e;'
+          + 'font-size:14px;line-height:1.35;padding:10px 14px;border-radius:12px;'
+          + 'z-index:2147483000;pointer-events:none;opacity:0;transition:opacity 0.18s ease;';
+        document.body.appendChild(toastEl);
+      }
+      toastEl.textContent = msg;
+      void toastEl.offsetWidth;
+      toastEl.style.opacity = '1';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { if (toastEl) toastEl.style.opacity = '0'; }, ARM_MAX + 1000);
+    } catch (e) {}
+  }
+
+  // true = this send was held.
+  function hold(e) {
+    if (!onNewSessionPage()) return false;
+    var env = bridgeEnv();
+    if (!env) { armedAt = 0; return false; }
+    var now = Date.now();
+    if (armedAt && now - armedAt >= ARM_MIN && now - armedAt <= ARM_MAX) {
+      armedAt = 0;                       // the deliberate second send
+      return false;
+    }
+    if (!armedAt || now - armedAt > ARM_MAX) armedAt = now;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    say('Not sent. "' + env + '" is a Remote Control environment: Send posts into its '
+      + 'existing session instead of starting a new one. Switch to another environment, '
+      + 'or tap Send again to post there anyway.');
+    return true;
+  }
+
+  window.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest(SEND)) hold(e);
+  }, true);
+
+  window.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    var t = e.target;
+    if (t && t.closest && t.closest(INPUT)) hold(e);
   }, true);
 })();
